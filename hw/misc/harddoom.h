@@ -28,7 +28,7 @@
 #define HARDDOOM_INTR_PAGE_FAULT_SURF_DST	0x00000010
 #define HARDDOOM_INTR_PAGE_FAULT_SURF_SRC	0x00000020
 #define HARDDOOM_INTR_PAGE_FAULT_TEXTURE	0x00000040
-#define HARDDOOM_INTR_MASK			0x000001ff
+#define HARDDOOM_INTR_MASK			0x0000007f
 /* And enable (same bitfields).  */
 #define HARDDOOM_INTR_ENABLE			0x00c
 /* The reset register.  Punching 1 will clear all pending work.  There is
@@ -83,17 +83,15 @@
 #define HARDDOOM_STATE_COLORMAP_ADDR		0x090
 #define HARDDOOM_STATE_TRANSLATION_ADDR		0x094
 #define HARDDOOM_STATE_SURF_DIMS		0x098
-#define HARDDOOM_STATE_TEXTURE_SIZE		0x09c
+#define HARDDOOM_STATE_TEXTURE_DIMS		0x09c
 #define HARDDOOM_STATE_FILL_COLOR		0x0a0
 #define HARDDOOM_STATE_DRAW_PARAMS		0x0a4
 #define HARDDOOM_STATE_XY_A			0x0a8
 #define HARDDOOM_STATE_XY_B			0x0ac
-#define HARDDOOM_STATE_TEXTUREMID		0x0b0
-#define HARDDOOM_STATE_ISCALE			0x0b4
-#define HARDDOOM_STATE_XFRAC			0x0c0
-#define HARDDOOM_STATE_YFRAC			0x0c4
-#define HARDDOOM_STATE_XSTEP			0x0c8
-#define HARDDOOM_STATE_YSTEP			0x0cc
+#define HARDDOOM_STATE_USTART			0x0b0
+#define HARDDOOM_STATE_VSTART			0x0b4
+#define HARDDOOM_STATE_USTEP			0x0b8
+#define HARDDOOM_STATE_VSTEP			0x0bc
 #define HARDDOOM_STATE_COUNTER			0x0fc
 
 /* The single-entry TLBs, one for each paged buffer.
@@ -128,8 +126,8 @@
 #define HARDDOOM_DRAW_Y_CUR			0x144
 #define HARDDOOM_DRAW_X_RESTART			0x148
 #define HARDDOOM_DRAW_END			0x14c
-#define HARDDOOM_DRAW_TEXCOORD_X		0x150
-#define HARDDOOM_DRAW_TEXCOORD_Y		0x154
+#define HARDDOOM_DRAW_TEXCOORD_U		0x150
+#define HARDDOOM_DRAW_TEXCOORD_V		0x154
 #define HARDDOOM_DRAW_STATE			0x158
 #define HARDDOOM_DRAW_STATE_MODE_MASK		0x00000007
 #define HARDDOOM_DRAW_STATE_MODE_IDLE		0x00000000
@@ -195,12 +193,11 @@
 #define HARDDOOM_CMD_TYPE_TRANSLATION_ADDR	0x25
 /* Dimensions of all SURFs in use. */
 #define HARDDOOM_CMD_TYPE_SURF_DIMS		0x26
-/* Byte size of the texture for DRAW_COLUMN. */
-#define HARDDOOM_CMD_TYPE_TEXTURE_SIZE		0x27
+/* Height and byte size of the texture for DRAW_COLUMN. */
+#define HARDDOOM_CMD_TYPE_TEXTURE_DIMS		0x27
 /* Solid fill color for FILL_RECT and DRAW_LINE. */
 #define HARDDOOM_CMD_TYPE_FILL_COLOR		0x28
 /* Flags for DRAW_COLUMN and DRAW_SPAN (FUZZ, TRANSLATE, COLORMAP).
- * Also rarely changing parameters for DRAW_COLUMN (horizon line, texture height).
  */
 #define HARDDOOM_CMD_TYPE_DRAW_PARAMS		0x29
 /* Destination rect top left corner for COPY_RECT, FILL_RECT.
@@ -215,16 +212,12 @@
  * Right end point for DRAW_SPAN.
  */
 #define HARDDOOM_CMD_TYPE_XY_B			0x2b
-/* Tex coord at horizon line for DRAW_COLUMN. */
-#define HARDDOOM_CMD_TYPE_TEXTUREMID		0x2c
-/* Tex coord scale factor for DRAW_COLUMN. */
-#define HARDDOOM_CMD_TYPE_ISCALE		0x2d
-/* Tex coord start for DRAW_SPAN. */
-#define HARDDOOM_CMD_TYPE_XFRAC			0x30
-#define HARDDOOM_CMD_TYPE_YFRAC			0x31
-/* Tex coord derivative for DRAW_SPAN. */
-#define HARDDOOM_CMD_TYPE_XSTEP			0x32
-#define HARDDOOM_CMD_TYPE_YSTEP			0x33
+/* Tex coord start for DRAW_COLUMN (U), DRAW_SPAN (U+V). */
+#define HARDDOOM_CMD_TYPE_USTART		0x2c
+#define HARDDOOM_CMD_TYPE_VSTART		0x2d
+/* Tex coord derivative for DRAW_COLUMN (U), DRAW_SPAN (U+V). */
+#define HARDDOOM_CMD_TYPE_USTEP			0x2e
+#define HARDDOOM_CMD_TYPE_VSTEP			0x2f
 /* Set the sync counter.  */
 #define HARDDOOM_CMD_TYPE_COUNTER		0x3f
 
@@ -246,17 +239,15 @@
 #define HARDDOOM_CMD_COLORMAP_ADDR(addr)	(HARDDOOM_CMD_TYPE_COLORMAP_ADDR << 26 | (addr) >> 8)
 #define HARDDOOM_CMD_TRANSLATION_ADDR(addr)	(HARDDOOM_CMD_TYPE_TRANSLATION_ADDR << 26 | (addr) >> 8)
 #define HARDDOOM_CMD_SURF_DIMS(w, h)		(HARDDOOM_CMD_TYPE_SURF_DIMS << 26 | (w) >> 6 | (h) << 8)
-#define HARDDOOM_CMD_TEXTURE_SIZE(sz)		(HARDDOOM_CMD_TYPE_TEXTURE_SIZE << 26 | ((sz) - 1) >> 8)
+#define HARDDOOM_CMD_TEXTURE_DIMS(sz, h)	(HARDDOOM_CMD_TYPE_TEXTURE_DIMS << 26 | ((sz) - 1) >> 8 << 12 | (h))
 #define HARDDOOM_CMD_FILL_COLOR(color)		(HARDDOOM_CMD_TYPE_FILL_COLOR << 26 | (color))
-#define HARDDOOM_CMD_DRAW_PARAMS(flags, cy, th)	(HARDDOOM_CMD_TYPE_DRAW_PARAMS << 26 | (th) << 16 | (cy) << 4 | (flags))
+#define HARDDOOM_CMD_DRAW_PARAMS(flags	)	(HARDDOOM_CMD_TYPE_DRAW_PARAMS << 26 | (flags))
 #define HARDDOOM_CMD_XY_A(x, y)			(HARDDOOM_CMD_TYPE_XY_A << 26 | (y) << 12 | (x))
 #define HARDDOOM_CMD_XY_B(x, y)			(HARDDOOM_CMD_TYPE_XY_B << 26 | (y) << 12 | (x))
-#define HARDDOOM_CMD_TEXTUREMID(tmid)		(HARDDOOM_CMD_TYPE_TEXTUREMID << 26 | (tmid))
-#define HARDDOOM_CMD_ISCALE(iscale)		(HARDDOOM_CMD_TYPE_ISCALE << 26 | (iscale))
-#define HARDDOOM_CMD_XFRAC(arg)			(HARDDOOM_CMD_TYPE_XFRAC << 26 | (arg))
-#define HARDDOOM_CMD_YFRAC(arg)			(HARDDOOM_CMD_TYPE_YFRAC << 26 | (arg))
-#define HARDDOOM_CMD_XSTEP(arg)			(HARDDOOM_CMD_TYPE_XSTEP << 26 | (arg))
-#define HARDDOOM_CMD_YSTEP(arg)			(HARDDOOM_CMD_TYPE_YSTEP << 26 | (arg))
+#define HARDDOOM_CMD_USTART(arg)		(HARDDOOM_CMD_TYPE_XSTART << 26 | (arg))
+#define HARDDOOM_CMD_VSTART(arg)		(HARDDOOM_CMD_TYPE_YSTART << 26 | (arg))
+#define HARDDOOM_CMD_USTEP(arg)			(HARDDOOM_CMD_TYPE_XSTEP << 26 | (arg))
+#define HARDDOOM_CMD_VSTEP(arg)			(HARDDOOM_CMD_TYPE_YSTEP << 26 | (arg))
 #define HARDDOOM_CMD_COUNTER(arg)		(HARDDOOM_CMD_TYPE_COUNTER << 26 | (arg))
 
 #define HARDDOOM_CMD_EXTR_TYPE_HI(cmd)		((cmd) >> 30 & 0x3)
@@ -268,16 +259,14 @@
 #define HARDDOOM_CMD_EXTR_PT(cmd)		(((cmd) & 0x3ffffff) << 6)
 #define HARDDOOM_CMD_EXTR_SURF_DIMS_WIDTH(cmd)	(((cmd) & 0x3f) << 6)
 #define HARDDOOM_CMD_EXTR_SURF_DIMS_HEIGHT(cmd)	(((cmd) & 0xfff00) >> 8)
-#define HARDDOOM_CMD_EXTR_TEXTURE_SIZE(cmd)	((((cmd) & 0x3fff) + 1) << 8)
+#define HARDDOOM_CMD_EXTR_TEXTURE_SIZE(cmd)	((((cmd) >> 12 & 0x3fff) + 1) << 8)
+#define HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(cmd)	((cmd) & 0x3ff)
 #define HARDDOOM_CMD_EXTR_FLAT_ADDR(cmd)	(((cmd) & 0xfffff) << 12)
 #define HARDDOOM_CMD_EXTR_COLORMAP_ADDR(cmd)	(((cmd) & 0xffffff) << 8)
 #define HARDDOOM_CMD_EXTR_FILL_COLOR(cmd)	((cmd) & 0xff)
-#define HARDDOOM_CMD_EXTR_CENTERY(cmd)		((cmd) >> 4 & 0x7ff)
-#define HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(cmd)	((cmd) >> 16 & 0x3ff)
 #define HARDDOOM_CMD_EXTR_XY_X(cmd)		((cmd) & 0x7ff)
 #define HARDDOOM_CMD_EXTR_XY_Y(cmd)		((cmd) >> 12 & 0x7ff)
 #define HARDDOOM_CMD_EXTR_TEX_COORD(cmd)	((cmd) & 0x3ffffff)
-#define HARDDOOM_CMD_EXTR_FLAT_COORD(cmd)	((cmd) & 0x3fffff)
 #define HARDDOOM_CMD_EXTR_COUNTER(cmd)		((cmd) & 0x3ffffff)
 
 /* Page tables */

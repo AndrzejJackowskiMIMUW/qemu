@@ -33,14 +33,12 @@ typedef struct {
 	uint32_t state_colormap_addr[2];
 	uint32_t state_flat_addr;
 	uint32_t state_surf_dims;
-	uint32_t state_texture_size;
+	uint32_t state_texture_dims;
 	uint32_t state_fill_color;
 	uint32_t state_xy[2];
-	uint32_t state_texturemid;
-	uint32_t state_iscale;
 	uint32_t state_draw_params;
-	uint32_t state_xyfrac[2];
-	uint32_t state_xystep[2];
+	uint32_t state_uvstart[2];
+	uint32_t state_uvstep[2];
 	uint32_t state_counter;
 	uint32_t tlb_tag[3];
 	uint32_t tlb_pte[3];
@@ -49,8 +47,8 @@ typedef struct {
 	uint32_t draw_y_cur;
 	uint32_t draw_x_restart;
 	uint32_t draw_end;
-	uint32_t draw_texcoord_x;
-	uint32_t draw_texcoord_y;
+	uint32_t draw_texcoord_u;
+	uint32_t draw_texcoord_v;
 	uint32_t draw_state;
 	uint32_t draw_line_size;
 	uint32_t draw_column_offset;
@@ -82,14 +80,12 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32_ARRAY(state_colormap_addr, HardDoomState, 2),
 		VMSTATE_UINT32(state_flat_addr, HardDoomState),
 		VMSTATE_UINT32(state_surf_dims, HardDoomState),
-		VMSTATE_UINT32(state_texture_size, HardDoomState),
+		VMSTATE_UINT32(state_texture_dims, HardDoomState),
 		VMSTATE_UINT32(state_fill_color, HardDoomState),
 		VMSTATE_UINT32_ARRAY(state_xy, HardDoomState, 2),
-		VMSTATE_UINT32(state_texturemid, HardDoomState),
-		VMSTATE_UINT32(state_iscale, HardDoomState),
 		VMSTATE_UINT32(state_draw_params, HardDoomState),
-		VMSTATE_UINT32_ARRAY(state_xyfrac, HardDoomState, 2),
-		VMSTATE_UINT32_ARRAY(state_xystep, HardDoomState, 2),
+		VMSTATE_UINT32_ARRAY(state_uvstart, HardDoomState, 2),
+		VMSTATE_UINT32_ARRAY(state_uvstep, HardDoomState, 2),
 		VMSTATE_UINT32(state_counter, HardDoomState),
 		VMSTATE_UINT32_ARRAY(tlb_tag, HardDoomState, 3),
 		VMSTATE_UINT32_ARRAY(tlb_pte, HardDoomState, 3),
@@ -98,8 +94,8 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32(draw_y_cur, HardDoomState),
 		VMSTATE_UINT32(draw_x_restart, HardDoomState),
 		VMSTATE_UINT32(draw_end, HardDoomState),
-		VMSTATE_UINT32(draw_texcoord_x, HardDoomState),
-		VMSTATE_UINT32(draw_texcoord_y, HardDoomState),
+		VMSTATE_UINT32(draw_texcoord_u, HardDoomState),
+		VMSTATE_UINT32(draw_texcoord_v, HardDoomState),
 		VMSTATE_UINT32(draw_state, HardDoomState),
 		VMSTATE_UINT32(draw_line_size, HardDoomState),
 		VMSTATE_UINT32(draw_column_offset, HardDoomState),
@@ -227,22 +223,19 @@ static bool harddoom_valid_cmd(uint32_t val) {
 			return !(val & ~0xfc0fffff);
 		case HARDDOOM_CMD_TYPE_SURF_DIMS:
 			return !(val & ~0xfc0fffff);
-		case HARDDOOM_CMD_TYPE_TEXTURE_SIZE:
-			return !(val & ~0xfc003fff);
+		case HARDDOOM_CMD_TYPE_TEXTURE_DIMS:
+			return !(val & ~0xfffff3ff);
 		case HARDDOOM_CMD_TYPE_FILL_COLOR:
 			return !(val & ~0xfc0000ff);
 		case HARDDOOM_CMD_TYPE_XY_A:
 		case HARDDOOM_CMD_TYPE_XY_B:
 			return !(val & ~0xfc7ff7ff);
-		case HARDDOOM_CMD_TYPE_TEXTUREMID:
-		case HARDDOOM_CMD_TYPE_ISCALE:
-			return !(val & ~0xffffffff);
 		case HARDDOOM_CMD_TYPE_DRAW_PARAMS:
-			return !(val & ~0xffff7ff7);
-		case HARDDOOM_CMD_TYPE_XFRAC:
-		case HARDDOOM_CMD_TYPE_YFRAC:
-		case HARDDOOM_CMD_TYPE_XSTEP:
-		case HARDDOOM_CMD_TYPE_YSTEP:
+			return !(val & ~0xfc000007);
+		case HARDDOOM_CMD_TYPE_USTART:
+		case HARDDOOM_CMD_TYPE_VSTART:
+		case HARDDOOM_CMD_TYPE_USTEP:
+		case HARDDOOM_CMD_TYPE_VSTEP:
 			return !(val & ~0xffffffff);
 		case HARDDOOM_CMD_TYPE_COUNTER:
 			return !(val & ~0xffffffff);
@@ -384,7 +377,6 @@ static void harddoom_trigger_draw_background(HardDoomState *d, uint32_t val) {
 /* Executes a DRAW_COLUMN command.  */
 static void harddoom_trigger_draw_column(HardDoomState *d, uint32_t val) {
 	uint32_t column_offset = HARDDOOM_CMD_EXTR_COLUMN_OFFSET(val);
-	int y_c = HARDDOOM_CMD_EXTR_CENTERY(d->state_draw_params);
 	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
 	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
 	int x_e = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[1]);
@@ -402,8 +394,7 @@ static void harddoom_trigger_draw_column(HardDoomState *d, uint32_t val) {
 	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
 	d->draw_y_cur |= y_a;
 	d->draw_end = x_e | y_e << 16;
-	uint32_t frac = d->state_texturemid + (y_a - y_c) * d->state_iscale;
-	d->draw_texcoord_y = frac & 0x03ffffff;
+	d->draw_texcoord_u = d->state_uvstart[0];
 	d->draw_column_offset = column_offset;
 	harddoom_status_update(d);
 	harddoom_schedule(d);
@@ -428,8 +419,8 @@ static void harddoom_trigger_draw_span(HardDoomState *d, uint32_t val) {
 	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
 	d->draw_y_cur |= y_a;
 	d->draw_end = x_e | y_e << 16;
-	d->draw_texcoord_x = d->state_xyfrac[0];
-	d->draw_texcoord_y = d->state_xyfrac[1];
+	d->draw_texcoord_u = d->state_uvstart[0];
+	d->draw_texcoord_v = d->state_uvstart[1];
 	harddoom_status_update(d);
 	harddoom_schedule(d);
 }
@@ -481,7 +472,7 @@ static void harddoom_fill_cache_texture(HardDoomState *d, uint32_t offset) {
 		((d->cache_state & HARDDOOM_CACHE_STATE_TEXTURE_TAG_MASK) >>
 		 HARDDOOM_CACHE_STATE_TEXTURE_TAG_SHIFT) == tag)
 		return;
-	if (offset <= d->state_texture_size) {
+	if (offset < HARDDOOM_CMD_EXTR_TEXTURE_SIZE(d->state_texture_dims)) {
 		/* If it's out of range, just skip the fetch and use whatever
 		 * crap we already have in the cache.  */
 		uint32_t phys = harddoom_translate_addr(d, TLB_TEXTURE, offset);
@@ -577,8 +568,8 @@ static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
 	case HARDDOOM_CMD_TYPE_SURF_DIMS:
 		d->state_surf_dims = val & 0xffffff;
 		break;
-	case HARDDOOM_CMD_TYPE_TEXTURE_SIZE:
-		d->state_texture_size = val & 0x3fff;
+	case HARDDOOM_CMD_TYPE_TEXTURE_DIMS:
+		d->state_texture_dims = val & 0x3fff3ff;
 		break;
 	case HARDDOOM_CMD_TYPE_FILL_COLOR:
 		d->state_fill_color = val & 0xff;
@@ -589,26 +580,20 @@ static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
 	case HARDDOOM_CMD_TYPE_XY_B:
 		d->state_xy[1] = val & 0x7ff7ff;
 		break;
-	case HARDDOOM_CMD_TYPE_TEXTUREMID:
-		d->state_texturemid = val;
-		break;
-	case HARDDOOM_CMD_TYPE_ISCALE:
-		d->state_iscale = val;
-		break;
 	case HARDDOOM_CMD_TYPE_DRAW_PARAMS:
-		d->state_iscale = val & 0x3ff7ff7;
+		d->state_draw_params = val & 7;
 		break;
-	case HARDDOOM_CMD_TYPE_XFRAC:
-		d->state_xyfrac[0] = val;
+	case HARDDOOM_CMD_TYPE_USTART:
+		d->state_uvstart[0] = val;
 		break;
-	case HARDDOOM_CMD_TYPE_YFRAC:
-		d->state_xyfrac[1] = val;
+	case HARDDOOM_CMD_TYPE_VSTART:
+		d->state_uvstart[1] = val;
 		break;
-	case HARDDOOM_CMD_TYPE_XSTEP:
-		d->state_xystep[0] = val;
+	case HARDDOOM_CMD_TYPE_USTEP:
+		d->state_uvstep[0] = val;
 		break;
-	case HARDDOOM_CMD_TYPE_YSTEP:
-		d->state_xystep[1] = val;
+	case HARDDOOM_CMD_TYPE_VSTEP:
+		d->state_uvstep[1] = val;
 		break;
 	case HARDDOOM_CMD_TYPE_COUNTER:
 		d->state_counter = val;
@@ -733,8 +718,8 @@ static void harddoom_draw_work_atom(HardDoomState *d) {
 			harddoom_fill_cache_translation(d);
 		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
 			harddoom_fill_cache_colormap(d);
-		int ty = d->draw_texcoord_y >> 16;
-		int th = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->state_draw_params);
+		int ty = d->draw_texcoord_u >> 16;
+		int th = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->state_texture_dims);
 		if (th)
 			ty %= th;
 		int off = ty + d->draw_column_offset;
@@ -748,16 +733,16 @@ static void harddoom_draw_work_atom(HardDoomState *d) {
 		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
 			color = d->cache_data_colormap[color];
 		memset(buf, color, count);
-		d->draw_texcoord_y += d->state_iscale;
-		d->draw_texcoord_y &= 0x3ffffff;
+		d->draw_texcoord_u += d->state_uvstep[0];
+		d->draw_texcoord_u &= 0x3ffffff;
 	} else if (mode == HARDDOOM_DRAW_STATE_MODE_SPAN) {
 		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_TRANSLATE)
 			harddoom_fill_cache_translation(d);
 		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
 			harddoom_fill_cache_colormap(d);
 		for (int i = 0; i < count; i++) {
-			int tx = d->draw_texcoord_x >> 16 & 0x3f;
-			int ty = d->draw_texcoord_y >> 16 & 0x3f;
+			int tx = d->draw_texcoord_u >> 16 & 0x3f;
+			int ty = d->draw_texcoord_v >> 16 & 0x3f;
 			int off = ty << 6 | tx;
 			harddoom_fill_cache_flat(d, off);
 			uint8_t color = d->cache_data_flat[off & 0xff];
@@ -766,11 +751,11 @@ static void harddoom_draw_work_atom(HardDoomState *d) {
 			if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
 				color = d->cache_data_colormap[color];
 			buf[i] = color;
-			d->draw_texcoord_x += d->state_xystep[0];
-			d->draw_texcoord_y += d->state_xystep[1];
+			d->draw_texcoord_u += d->state_uvstep[0];
+			d->draw_texcoord_v += d->state_uvstep[1];
 		}
-		d->draw_texcoord_x &= 0x3fffff;
-		d->draw_texcoord_y &= 0x3fffff;
+		d->draw_texcoord_u &= 0x3fffff;
+		d->draw_texcoord_v &= 0x3fffff;
 	} else if (mode == HARDDOOM_DRAW_STATE_MODE_FUZZ) {
 		harddoom_fill_cache_colormap(d);
 		uint8_t bufp[64], bufn[64];
@@ -1029,11 +1014,11 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 	case HARDDOOM_DRAW_END:
 		d->draw_end = val & 0x07ff07ff;
 		return;
-	case HARDDOOM_DRAW_TEXCOORD_X:
-		d->draw_texcoord_x = val & 0x003fffff;
+	case HARDDOOM_DRAW_TEXCOORD_U:
+		d->draw_texcoord_u = val & 0x003fffff;
 		return;
-	case HARDDOOM_DRAW_TEXCOORD_Y:
-		d->draw_texcoord_y = val & 0x03ffffff;
+	case HARDDOOM_DRAW_TEXCOORD_V:
+		d->draw_texcoord_v = val & 0x03ffffff;
 		return;
 	case HARDDOOM_DRAW_STATE:
 		d->draw_state = val & 0x1fff3f3f;
@@ -1149,28 +1134,24 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 		return d->state_flat_addr;
 	case HARDDOOM_STATE_SURF_DIMS:
 		return d->state_surf_dims;
-	case HARDDOOM_STATE_TEXTURE_SIZE:
-		return d->state_texture_size;
+	case HARDDOOM_STATE_TEXTURE_DIMS:
+		return d->state_texture_dims;
 	case HARDDOOM_STATE_FILL_COLOR:
 		return d->state_fill_color;
 	case HARDDOOM_STATE_XY_A:
 		return d->state_xy[0];
 	case HARDDOOM_STATE_XY_B:
 		return d->state_xy[1];
-	case HARDDOOM_STATE_TEXTUREMID:
-		return d->state_texturemid;
-	case HARDDOOM_STATE_ISCALE:
-		return d->state_iscale;
 	case HARDDOOM_STATE_DRAW_PARAMS:
 		return d->state_draw_params;
-	case HARDDOOM_STATE_XFRAC:
-		return d->state_xyfrac[0];
-	case HARDDOOM_STATE_YFRAC:
-		return d->state_xyfrac[1];
-	case HARDDOOM_STATE_XSTEP:
-		return d->state_xystep[0];
-	case HARDDOOM_STATE_YSTEP:
-		return d->state_xystep[1];
+	case HARDDOOM_STATE_USTART:
+		return d->state_uvstart[0];
+	case HARDDOOM_STATE_VSTART:
+		return d->state_uvstart[1];
+	case HARDDOOM_STATE_USTEP:
+		return d->state_uvstep[0];
+	case HARDDOOM_STATE_VSTEP:
+		return d->state_uvstep[1];
 	case HARDDOOM_STATE_COUNTER:
 		return d->state_counter;
 	/* DRAW state.  */
@@ -1182,10 +1163,10 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 		return d->draw_x_restart;
 	case HARDDOOM_DRAW_END:
 		return d->draw_end;
-	case HARDDOOM_DRAW_TEXCOORD_X:
-		return d->draw_texcoord_x;
-	case HARDDOOM_DRAW_TEXCOORD_Y:
-		return d->draw_texcoord_y;
+	case HARDDOOM_DRAW_TEXCOORD_U:
+		return d->draw_texcoord_u;
+	case HARDDOOM_DRAW_TEXCOORD_V:
+		return d->draw_texcoord_v;
 	case HARDDOOM_DRAW_STATE:
 		return d->draw_state;
 	case HARDDOOM_DRAW_LINE_SIZE:
@@ -1245,24 +1226,22 @@ static void harddoom_reset(DeviceState *d)
 	s->state_colormap_addr[1] = mrand48() & 0xffffff;
 	s->state_flat_addr = mrand48() & 0xfffff;
 	s->state_surf_dims = mrand48() & 0xfffff;
-	s->state_texture_size = mrand48() & 0x3fff;
+	s->state_texture_dims = mrand48() & 0x3fff3ff;
 	s->state_fill_color = mrand48() & 0xff;
 	s->state_xy[0] = mrand48() & 0x7ff7ff;
 	s->state_xy[1] = mrand48() & 0x7ff7ff;
-	s->state_texturemid = mrand48() & 0x3ffffff;
-	s->state_iscale = mrand48() & 0x3ffffff;
-	s->state_draw_params = mrand48() & 0x3ff7fff;
-	s->state_xyfrac[0] = mrand48() & 0x3ffffff;
-	s->state_xyfrac[1] = mrand48() & 0x3ffffff;
-	s->state_xystep[0] = mrand48() & 0x3ffffff;
-	s->state_xystep[1] = mrand48() & 0x3ffffff;
+	s->state_draw_params = mrand48() & 7;
+	s->state_uvstart[0] = mrand48() & 0x3ffffff;
+	s->state_uvstart[1] = mrand48() & 0x3ffffff;
+	s->state_uvstep[0] = mrand48() & 0x3ffffff;
+	s->state_uvstep[1] = mrand48() & 0x3ffffff;
 	s->state_counter = mrand48() & 0x3ffffff;
 	s->draw_x_cur = mrand48() & 0x07ff07ff;
 	s->draw_y_cur = mrand48() & 0x07ff07ff;
 	s->draw_x_restart = mrand48() & 0x07ff07ff;
 	s->draw_end = mrand48() & 0x07ff07ff;
-	s->draw_texcoord_x = mrand48() & 0x003fffff;
-	s->draw_texcoord_y = mrand48() & 0x03ffffff;
+	s->draw_texcoord_u = mrand48() & 0x003fffff;
+	s->draw_texcoord_v = mrand48() & 0x03ffffff;
 	s->draw_state = mrand48() & 0x1fff3f3f;
 	s->draw_line_size = mrand48() & 0x07ff07ff;
 	s->draw_column_offset = mrand48() & 0x003fffff;
