@@ -25,7 +25,8 @@ typedef struct {
 	uint32_t status;
 	uint32_t intr;
 	uint32_t intr_enable;
-	uint32_t counter_notify;
+	uint32_t sync_last;
+	uint32_t sync_intr;
 	uint32_t cmd_read_ptr;
 	uint32_t cmd_write_ptr;
 	uint32_t fifo_state;
@@ -39,7 +40,6 @@ typedef struct {
 	uint32_t state_draw_params;
 	uint32_t state_uvstart[2];
 	uint32_t state_uvstep[2];
-	uint32_t state_counter;
 	uint32_t tlb_tag[3];
 	uint32_t tlb_pte[3];
 	uint32_t cache_state;
@@ -72,7 +72,8 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32(status, HardDoomState),
 		VMSTATE_UINT32(intr, HardDoomState),
 		VMSTATE_UINT32(intr_enable, HardDoomState),
-		VMSTATE_UINT32(counter_notify, HardDoomState),
+		VMSTATE_UINT32(sync_last, HardDoomState),
+		VMSTATE_UINT32(sync_intr, HardDoomState),
 		VMSTATE_UINT32(cmd_read_ptr, HardDoomState),
 		VMSTATE_UINT32(cmd_write_ptr, HardDoomState),
 		VMSTATE_UINT32(fifo_state, HardDoomState),
@@ -86,7 +87,6 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32(state_draw_params, HardDoomState),
 		VMSTATE_UINT32_ARRAY(state_uvstart, HardDoomState, 2),
 		VMSTATE_UINT32_ARRAY(state_uvstep, HardDoomState, 2),
-		VMSTATE_UINT32(state_counter, HardDoomState),
 		VMSTATE_UINT32_ARRAY(tlb_tag, HardDoomState, 3),
 		VMSTATE_UINT32_ARRAY(tlb_pte, HardDoomState, 3),
 		VMSTATE_UINT32(cache_state, HardDoomState),
@@ -200,18 +200,6 @@ static bool harddoom_valid_cmd(uint32_t val) {
 	if (HARDDOOM_CMD_EXTR_TYPE_HI(val) == HARDDOOM_CMD_TYPE_HI_JUMP)
 		return false;
 	switch (HARDDOOM_CMD_EXTR_TYPE(val)) {
-		case HARDDOOM_CMD_TYPE_COPY_RECT:
-			return !(val & ~0xfcffffff);
-		case HARDDOOM_CMD_TYPE_FILL_RECT:
-			return !(val & ~0xfcffffff);
-		case HARDDOOM_CMD_TYPE_DRAW_LINE:
-			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
-			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
-			return !(val & ~0xfc3fffff);
-		case HARDDOOM_CMD_TYPE_DRAW_SPAN:
-			return !(val & ~0xfc000000);
 		case HARDDOOM_CMD_TYPE_SURF_DST_PT:
 		case HARDDOOM_CMD_TYPE_SURF_SRC_PT:
 		case HARDDOOM_CMD_TYPE_TEXTURE_PT:
@@ -237,7 +225,21 @@ static bool harddoom_valid_cmd(uint32_t val) {
 		case HARDDOOM_CMD_TYPE_USTEP:
 		case HARDDOOM_CMD_TYPE_VSTEP:
 			return !(val & ~0xffffffff);
-		case HARDDOOM_CMD_TYPE_COUNTER:
+		case HARDDOOM_CMD_TYPE_COPY_RECT:
+			return !(val & ~0xfcffffff);
+		case HARDDOOM_CMD_TYPE_FILL_RECT:
+			return !(val & ~0xfcffffff);
+		case HARDDOOM_CMD_TYPE_DRAW_LINE:
+			return !(val & ~0xfc000000);
+		case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
+			return !(val & ~0xfc000000);
+		case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
+			return !(val & ~0xfc3fffff);
+		case HARDDOOM_CMD_TYPE_DRAW_SPAN:
+			return !(val & ~0xfc000000);
+		case HARDDOOM_CMD_TYPE_INTERLOCK:
+			return !(val & ~0xfc000000);
+		case HARDDOOM_CMD_TYPE_SYNC:
 			return !(val & ~0xffffffff);
 		default:
 			return false;
@@ -522,24 +524,6 @@ static void harddoom_fill_cache_translation(HardDoomState *d) {
 static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
 	val &= ~0xfc000000;
 	switch (cmd) {
-	case HARDDOOM_CMD_TYPE_COPY_RECT:
-		harddoom_trigger_copy_rect(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_FILL_RECT:
-		harddoom_trigger_fill_rect(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_LINE:
-		harddoom_trigger_draw_line(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
-		harddoom_trigger_draw_background(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
-		harddoom_trigger_draw_column(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_SPAN:
-		harddoom_trigger_draw_span(d, val);
-		break;
 	case HARDDOOM_CMD_TYPE_SURF_DST_PT:
 		d->state_pt[TLB_SURF_DST] = val;
 		d->tlb_tag[TLB_SURF_DST] &= ~HARDDOOM_TLB_TAG_VALID;
@@ -595,10 +579,30 @@ static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
 	case HARDDOOM_CMD_TYPE_VSTEP:
 		d->state_uvstep[1] = val;
 		break;
-	case HARDDOOM_CMD_TYPE_COUNTER:
-		d->state_counter = val;
-		if (d->counter_notify == val)
-			harddoom_trigger(d, HARDDOOM_INTR_NOTIFY);
+	case HARDDOOM_CMD_TYPE_COPY_RECT:
+		harddoom_trigger_copy_rect(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_FILL_RECT:
+		harddoom_trigger_fill_rect(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_DRAW_LINE:
+		harddoom_trigger_draw_line(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
+		harddoom_trigger_draw_background(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
+		harddoom_trigger_draw_column(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_DRAW_SPAN:
+		harddoom_trigger_draw_span(d, val);
+		break;
+	case HARDDOOM_CMD_TYPE_INTERLOCK:
+		break;
+	case HARDDOOM_CMD_TYPE_SYNC:
+		d->sync_last = val;
+		if (d->sync_intr == val)
+			harddoom_trigger(d, HARDDOOM_INTR_SYNC);
 		break;
 	default:
 		fprintf(stderr, "harddoom error: invalid command %d executed [param %08x]\n", cmd, val);
@@ -929,18 +933,6 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 			fprintf(stderr, "harddoom error: invalid ENABLE value %08x\n", val);
 		harddoom_schedule(d);
 		return;
-	case HARDDOOM_INTR:
-		d->intr &= ~val;
-		if (val & ~HARDDOOM_INTR_MASK)
-			fprintf(stderr, "harddoom error: invalid INTR value %08x\n", val);
-		harddoom_status_update(d);
-		return;
-	case HARDDOOM_INTR_ENABLE:
-		d->intr_enable = val & HARDDOOM_INTR_MASK;
-		if (val & ~HARDDOOM_INTR_MASK)
-			fprintf(stderr, "harddoom error: invalid INTR_ENABLE value %08x\n", val);
-		harddoom_status_update(d);
-		return;
 	case HARDDOOM_RESET:
 		if (val & HARDDOOM_RESET_DRAW)
 			harddoom_reset_draw(d);
@@ -953,10 +945,27 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 		if (val & ~(HARDDOOM_RESET_DRAW | HARDDOOM_RESET_FIFO | HARDDOOM_RESET_TLB | HARDDOOM_RESET_CACHE))
 			fprintf(stderr, "harddoom error: invalid RESET value %08x\n", val);
 		return;
-	case HARDDOOM_COUNTER_NOTIFY:
-		d->counter_notify = val;
-		if (val & ~HARDDOOM_COUNTER_MASK)
-			fprintf(stderr, "harddoom error: invalid COUNTER_NOTIFY value %08x\n", val);
+	case HARDDOOM_INTR:
+		d->intr &= ~val;
+		if (val & ~HARDDOOM_INTR_MASK)
+			fprintf(stderr, "harddoom error: invalid INTR value %08x\n", val);
+		harddoom_status_update(d);
+		return;
+	case HARDDOOM_INTR_ENABLE:
+		d->intr_enable = val & HARDDOOM_INTR_MASK;
+		if (val & ~HARDDOOM_INTR_MASK)
+			fprintf(stderr, "harddoom error: invalid INTR_ENABLE value %08x\n", val);
+		harddoom_status_update(d);
+		return;
+	case HARDDOOM_SYNC_LAST:
+		d->sync_last = val;
+		if (val & ~HARDDOOM_SYNC_MASK)
+			fprintf(stderr, "harddoom error: invalid SYNC_LAST value %08x\n", val);
+		return;
+	case HARDDOOM_SYNC_INTR:
+		d->sync_intr = val;
+		if (val & ~HARDDOOM_SYNC_MASK)
+			fprintf(stderr, "harddoom error: invalid SYNC_INTR value %08x\n", val);
 		return;
 	case HARDDOOM_FIFO_SEND:
 		harddoom_fifo_send(d, val);
@@ -1041,7 +1050,7 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 		return;
 	}
 	/* Direct access to the commands.  */
-	if (addr >= HARDDOOM_TRIGGER_COPY_RECT && addr <= HARDDOOM_STATE_COUNTER && !(addr & 3)) {
+	if (addr >= HARDDOOM_STATE_SURF_DST_PT && addr <= HARDDOOM_TRIGGER_SYNC && !(addr & 3)) {
 		harddoom_do_command(d, addr >> 2 & 0x3f, val);
 		return;
 	}
@@ -1098,8 +1107,10 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 		return d->intr;
 	case HARDDOOM_INTR_ENABLE:
 		return d->intr_enable;
-	case HARDDOOM_COUNTER_NOTIFY:
-		return d->counter_notify;
+	case HARDDOOM_SYNC_LAST:
+		return d->sync_last;
+	case HARDDOOM_SYNC_INTR:
+		return d->sync_intr;
 	case HARDDOOM_CMD_READ_PTR:
 		return d->cmd_read_ptr;
 	case HARDDOOM_CMD_WRITE_PTR:
@@ -1152,8 +1163,6 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 		return d->state_uvstep[0];
 	case HARDDOOM_STATE_VSTEP:
 		return d->state_uvstep[1];
-	case HARDDOOM_STATE_COUNTER:
-		return d->state_counter;
 	/* DRAW state.  */
 	case HARDDOOM_DRAW_X_CUR:
 		return d->draw_x_cur;
@@ -1214,7 +1223,8 @@ static void harddoom_reset(DeviceState *d)
 	s->intr_enable = 0;
 	/* But these don't; hardware is evil. */
 	s->intr = mrand48() & HARDDOOM_INTR_MASK;
-	s->counter_notify = mrand48() & HARDDOOM_COUNTER_MASK;
+	s->sync_last = mrand48() & HARDDOOM_SYNC_MASK;
+	s->sync_intr = mrand48() & HARDDOOM_SYNC_MASK;
 	s->cmd_read_ptr = mrand48() & ~3;
 	s->cmd_write_ptr = mrand48() & ~3;
 	for (i = 0; i < 3; i++) {
@@ -1235,7 +1245,6 @@ static void harddoom_reset(DeviceState *d)
 	s->state_uvstart[1] = mrand48() & 0x3ffffff;
 	s->state_uvstep[0] = mrand48() & 0x3ffffff;
 	s->state_uvstep[1] = mrand48() & 0x3ffffff;
-	s->state_counter = mrand48() & 0x3ffffff;
 	s->draw_x_cur = mrand48() & 0x07ff07ff;
 	s->draw_y_cur = mrand48() & 0x07ff07ff;
 	s->draw_x_restart = mrand48() & 0x07ff07ff;

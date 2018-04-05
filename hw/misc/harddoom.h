@@ -19,9 +19,16 @@
 #define HARDDOOM_STATUS_DRAW			0x00000001
 #define HARDDOOM_STATUS_FIFO			0x00000002
 #define HARDDOOM_STATUS_FETCH_CMD		0x00000004
+/* The reset register.  Punching 1 will clear all pending work.  There is
+ * no reset for FETCH_CMD (initialize CMD_*_PTR instead).  */
+#define HARDDOOM_RESET				0x004
+#define HARDDOOM_RESET_DRAW			0x00000001
+#define HARDDOOM_RESET_FIFO			0x00000002
+#define HARDDOOM_RESET_TLB			0x00000008
+#define HARDDOOM_RESET_CACHE			0x00000010
 /* Interrupt status.  */
 #define HARDDOOM_INTR				0x008
-#define HARDDOOM_INTR_NOTIFY			0x00000001
+#define HARDDOOM_INTR_SYNC			0x00000001
 #define HARDDOOM_INTR_INVALID_CMD		0x00000002
 #define HARDDOOM_INTR_FIFO_OVERFLOW		0x00000004
 #define HARDDOOM_INTR_SURF_OVERFLOW		0x00000008
@@ -31,21 +38,17 @@
 #define HARDDOOM_INTR_MASK			0x0000007f
 /* And enable (same bitfields).  */
 #define HARDDOOM_INTR_ENABLE			0x00c
-/* The reset register.  Punching 1 will clear all pending work.  There is
- * no reset for FETCH_CMD (initialize CMD_*_PTR instead).  */
-#define HARDDOOM_RESET				0x010
-#define HARDDOOM_RESET_DRAW			0x00000001
-#define HARDDOOM_RESET_FIFO			0x00000002
-#define HARDDOOM_RESET_TLB			0x00000008
-#define HARDDOOM_RESET_CACHE			0x00000010
-/* The value that will trigger a NOTIFY when reached by STATE_COUNTER.  */
-#define HARDDOOM_COUNTER_NOTIFY			0x014
-#define HARDDOOM_COUNTER_MASK			0x03ffffff
+/* The last value of processed SYNC command.  */
+#define HARDDOOM_SYNC_LAST			0x010
+#define HARDDOOM_SYNC_MASK			0x03ffffff
+/* The value that will trigger a SYNC interrupt when used in SYNC command.  */
+#define HARDDOOM_SYNC_INTR			0x014
 /* Command read pointer -- whenever not equal to CMD_WRITE_PTR, FETCH_CMD will
  * fetch command from here and increment.  */
 #define HARDDOOM_CMD_READ_PTR			0x018
 /* Command write pointer -- FETCH_CMD halts when it hits this address.  */
 #define HARDDOOM_CMD_WRITE_PTR			0x01c
+
 /* Direct command submission (goes to FIFO bypassing FETCH_CMD).  */
 #define HARDDOOM_FIFO_SEND			0x020
 /* Read-only number of free slots in FIFO.  */
@@ -63,16 +66,6 @@
 #define HARDDOOM_FIFO_STATE_WRITE(st)		((st) >> 16 & 0x3ff)
 #define HARDDOOM_FIFO_STATE_MASK		0x03ff03ff
 #define HARDDOOM_FIFO_PTR_MASK			0x000003ff
-
-/* Internal DRAW trigger registers -- writing any of these will start the
- * given operation *now*, skipping the FIFO.  If some operation is already
- * in progress, the results are going to be unpredictable.  */
-#define HARDDOOM_TRIGGER_COPY_RECT		0x040
-#define HARDDOOM_TRIGGER_FILL_RECT		0x044
-#define HARDDOOM_TRIGGER_DRAW_LINE		0x048
-#define HARDDOOM_TRIGGER_DRAW_BACKGROUND	0x04c
-#define HARDDOOM_TRIGGER_DRAW_SPAN		0x050
-#define HARDDOOM_TRIGGER_DRAW_COLUMN		0x054
 
 /* Internal DRAW state registers -- these store the last sent value for
  * the corresponding command.  */
@@ -92,7 +85,19 @@
 #define HARDDOOM_STATE_VSTART			0x0b4
 #define HARDDOOM_STATE_USTEP			0x0b8
 #define HARDDOOM_STATE_VSTEP			0x0bc
-#define HARDDOOM_STATE_COUNTER			0x0fc
+
+/* Internal DRAW trigger registers -- writing any of these will start the
+ * given operation *now*, skipping the FIFO.  If some operation is already
+ * in progress, the results are going to be unpredictable.  */
+#define HARDDOOM_TRIGGER_COPY_RECT		0x0c0
+#define HARDDOOM_TRIGGER_FILL_RECT		0x0c4
+#define HARDDOOM_TRIGGER_DRAW_LINE		0x0c8
+#define HARDDOOM_TRIGGER_DRAW_BACKGROUND	0x0cc
+#define HARDDOOM_TRIGGER_DRAW_SPAN		0x0d0
+#define HARDDOOM_TRIGGER_DRAW_COLUMN		0x0d4
+
+#define HARDDOOM_TRIGGER_INTERLOCK		0x0f8
+#define HARDDOOM_TRIGGER_SYNC			0x0fc
 
 /* The single-entry TLBs, one for each paged buffer.
  * Tags have bits 000007ff: bits 0-9 are virtual page index, bit 10
@@ -166,19 +171,6 @@
 /* Jump in the command buffer.  */
 #define HARDDOOM_CMD_TYPE_HI_JUMP		0x0
 
-/* V_CopyRect: The usual blit.  Rectangle size passed directly.  */
-#define HARDDOOM_CMD_TYPE_COPY_RECT		0x10
-/* V_FillRect: The usual solid fill.  Rectangle size passed directly.  */
-#define HARDDOOM_CMD_TYPE_FILL_RECT		0x11
-/* V_DrawLine: The usual solid line. */
-#define HARDDOOM_CMD_TYPE_DRAW_LINE		0x12
-/* V_DrawBackground: Fill whole FB with repeated flat. */
-#define HARDDOOM_CMD_TYPE_DRAW_BACKGROUND	0x13
-/* R_DrawColumn. */
-#define HARDDOOM_CMD_TYPE_DRAW_COLUMN		0x14
-/* R_DrawSpan. */
-#define HARDDOOM_CMD_TYPE_DRAW_SPAN		0x15
-
 /* Surface to render to, all commands. */
 #define HARDDOOM_CMD_TYPE_SURF_DST_PT		0x20
 /* Source surface for COPY_RECT,  */
@@ -218,8 +210,24 @@
 /* Tex coord derivative for DRAW_COLUMN (U), DRAW_SPAN (U+V). */
 #define HARDDOOM_CMD_TYPE_USTEP			0x2e
 #define HARDDOOM_CMD_TYPE_VSTEP			0x2f
+
+/* V_CopyRect: The usual blit.  Rectangle size passed directly.  */
+#define HARDDOOM_CMD_TYPE_COPY_RECT		0x30
+/* V_FillRect: The usual solid fill.  Rectangle size passed directly.  */
+#define HARDDOOM_CMD_TYPE_FILL_RECT		0x31
+/* V_DrawLine: The usual solid line. */
+#define HARDDOOM_CMD_TYPE_DRAW_LINE		0x32
+/* V_DrawBackground: Fill whole FB with repeated flat. */
+#define HARDDOOM_CMD_TYPE_DRAW_BACKGROUND	0x33
+/* R_DrawColumn. */
+#define HARDDOOM_CMD_TYPE_DRAW_COLUMN		0x34
+/* R_DrawSpan. */
+#define HARDDOOM_CMD_TYPE_DRAW_SPAN		0x35
+
+/* Block further surface reads until inflight surface writes are complete.  */
+#define HARDDOOM_CMD_TYPE_INTERLOCK		0x3e
 /* Set the sync counter.  */
-#define HARDDOOM_CMD_TYPE_COUNTER		0x3f
+#define HARDDOOM_CMD_TYPE_SYNC			0x3f
 
 #define HARDDOOM_DRAW_PARAMS_FUZZ		0x1
 #define HARDDOOM_DRAW_PARAMS_TRANSLATE		0x2
@@ -248,7 +256,8 @@
 #define HARDDOOM_CMD_VSTART(arg)		(HARDDOOM_CMD_TYPE_YSTART << 26 | (arg))
 #define HARDDOOM_CMD_USTEP(arg)			(HARDDOOM_CMD_TYPE_XSTEP << 26 | (arg))
 #define HARDDOOM_CMD_VSTEP(arg)			(HARDDOOM_CMD_TYPE_YSTEP << 26 | (arg))
-#define HARDDOOM_CMD_COUNTER(arg)		(HARDDOOM_CMD_TYPE_COUNTER << 26 | (arg))
+#define HARDDOOM_CMD_INTERLOCK			(HARDDOOM_CMD_TYPE_INTERLOCK << 26)
+#define HARDDOOM_CMD_SYNC(arg)			(HARDDOOM_CMD_TYPE_SYNC << 26 | (arg))
 
 #define HARDDOOM_CMD_EXTR_TYPE_HI(cmd)		((cmd) >> 30 & 0x3)
 #define HARDDOOM_CMD_EXTR_JUMP_ADDR(cmd)	((cmd) << 2 & 0xfffffffc)
@@ -267,7 +276,7 @@
 #define HARDDOOM_CMD_EXTR_XY_X(cmd)		((cmd) & 0x7ff)
 #define HARDDOOM_CMD_EXTR_XY_Y(cmd)		((cmd) >> 12 & 0x7ff)
 #define HARDDOOM_CMD_EXTR_TEX_COORD(cmd)	((cmd) & 0x3ffffff)
-#define HARDDOOM_CMD_EXTR_COUNTER(cmd)		((cmd) & 0x3ffffff)
+#define HARDDOOM_CMD_EXTR_SYNC(cmd)		((cmd) & 0x3ffffff)
 
 /* Page tables */
 
