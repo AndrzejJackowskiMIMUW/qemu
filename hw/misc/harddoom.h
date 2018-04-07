@@ -3,8 +3,8 @@
 
 /* PCI ids */
 
-#define HARDDOOM_VENDOR_ID			0x1af4
-#define HARDDOOM_DEVICE_ID			0x10f4
+#define HARDDOOM_VENDOR_ID			0x0666
+#define HARDDOOM_DEVICE_ID			0x1993
 
 /* Registers */
 
