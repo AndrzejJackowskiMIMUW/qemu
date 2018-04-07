@@ -11,38 +11,42 @@
 /* Enables active units of the device.  TLB is passive and doesn't have
  * an enable (disable DRAW instead).  */
 #define HARDDOOM_ENABLE				0x000
-#define HARDDOOM_ENABLE_DRAW			0x00000001
+#define HARDDOOM_ENABLE_FETCH_CMD		0x00000001
 #define HARDDOOM_ENABLE_FIFO			0x00000002
-#define HARDDOOM_ENABLE_FETCH_CMD		0x00000004
+#define HARDDOOM_ENABLE_DRAW			0x00000004
+#define HARDDOOM_ENABLE_ALL			0x00000007
 /* Status of device units -- 1 means they have work to do.  */
 #define HARDDOOM_STATUS				0x004
-#define HARDDOOM_STATUS_DRAW			0x00000001
+#define HARDDOOM_STATUS_FETCH_CMD		0x00000001
 #define HARDDOOM_STATUS_FIFO			0x00000002
-#define HARDDOOM_STATUS_FETCH_CMD		0x00000004
+#define HARDDOOM_STATUS_DRAW			0x00000004
 /* The reset register.  Punching 1 will clear all pending work.  There is
  * no reset for FETCH_CMD (initialize CMD_*_PTR instead).  */
 #define HARDDOOM_RESET				0x004
-#define HARDDOOM_RESET_DRAW			0x00000001
 #define HARDDOOM_RESET_FIFO			0x00000002
+#define HARDDOOM_RESET_DRAW			0x00000004
 #define HARDDOOM_RESET_TLB			0x00000008
 #define HARDDOOM_RESET_CACHE			0x00000010
+#define HARDDOOM_RESET_ALL			0x0000001e
 /* Interrupt status.  */
 #define HARDDOOM_INTR				0x008
-#define HARDDOOM_INTR_SYNC			0x00000001
-#define HARDDOOM_INTR_INVALID_CMD		0x00000002
-#define HARDDOOM_INTR_FIFO_OVERFLOW		0x00000004
-#define HARDDOOM_INTR_SURF_OVERFLOW		0x00000008
-#define HARDDOOM_INTR_PAGE_FAULT_SURF_DST	0x00000010
-#define HARDDOOM_INTR_PAGE_FAULT_SURF_SRC	0x00000020
-#define HARDDOOM_INTR_PAGE_FAULT_TEXTURE	0x00000040
-#define HARDDOOM_INTR_MASK			0x0000007f
+#define HARDDOOM_INTR_FENCE			0x00000001
+#define HARDDOOM_INTR_PONG_SYNC			0x00000002
+#define HARDDOOM_INTR_PONG_ASYNC		0x00000004
+#define HARDDOOM_INTR_FE_ERROR			0x00000008
+#define HARDDOOM_INTR_FIFO_OVERFLOW		0x00000010
+#define HARDDOOM_INTR_SURF_OVERFLOW		0x00000020
+#define HARDDOOM_INTR_PAGE_FAULT_SURF_DST	0x00000040
+#define HARDDOOM_INTR_PAGE_FAULT_SURF_SRC	0x00000080
+#define HARDDOOM_INTR_PAGE_FAULT_TEXTURE	0x00000100
+#define HARDDOOM_INTR_MASK			0x000001ff
 /* And enable (same bitfields).  */
 #define HARDDOOM_INTR_ENABLE			0x00c
-/* The last value of processed SYNC command.  */
-#define HARDDOOM_SYNC_LAST			0x010
-#define HARDDOOM_SYNC_MASK			0x03ffffff
-/* The value that will trigger a SYNC interrupt when used in SYNC command.  */
-#define HARDDOOM_SYNC_INTR			0x014
+/* The last value of processed FENCE command.  */
+#define HARDDOOM_FENCE_LAST			0x010
+#define HARDDOOM_FENCE_MASK			0x03ffffff
+/* The value that will trigger a FENCE interrupt when used in FENCE command.  */
+#define HARDDOOM_FENCE_WAIT			0x014
 /* Command read pointer -- whenever not equal to CMD_WRITE_PTR, FETCH_CMD will
  * fetch command from here and increment.  */
 #define HARDDOOM_CMD_READ_PTR			0x018
@@ -50,9 +54,9 @@
 #define HARDDOOM_CMD_WRITE_PTR			0x01c
 
 /* Direct command submission (goes to FIFO bypassing FETCH_CMD).  */
-#define HARDDOOM_FIFO_SEND			0x020
+#define HARDDOOM_FIFO_SEND			0x030
 /* Read-only number of free slots in FIFO.  */
-#define HARDDOOM_FIFO_FREE			0x024
+#define HARDDOOM_FIFO_FREE			0x030
 /* Internal state of the FIFO -- read and write pointers.
  * There are 0x200 entries, indexed by 10-bit indices (each entry is visible
  * under two indices).  Bits 0-9 is read pointer (index of the next entry to
@@ -61,11 +65,17 @@
  * write ^ 0x200.  Situations where ((write - read) & 0x3ff) > 0x200
  * are illegal and won't be reached in proper operation of the device.
  */
-#define HARDDOOM_FIFO_STATE			0x028
-#define HARDDOOM_FIFO_STATE_READ(st)		((st) & 0x3ff)
-#define HARDDOOM_FIFO_STATE_WRITE(st)		((st) >> 16 & 0x3ff)
+#define HARDDOOM_FIFO_STATE			0x038
+#define HARDDOOM_FIFO_STATE_READ_PTR(st)	((st) & 0x3ff)
+#define HARDDOOM_FIFO_STATE_WRITE_PTR(st)	((st) >> 16 & 0x3ff)
 #define HARDDOOM_FIFO_STATE_MASK		0x03ff03ff
 #define HARDDOOM_FIFO_PTR_MASK			0x000003ff
+
+/* The window to the FIFO (internal).  When read, reads from READ_PTR,
+ * and increments it.  When written, writes to WRITE_PTR, and increments
+ * it.  If this causes a FIFO overflow/underflow, so be it.  */
+#define HARDDOOM_FIFO_WINDOW			0x03c
+#define HARDDOOM_FIFO_SIZE			0x00000200
 
 /* Internal DRAW state registers -- these store the last sent value for
  * the corresponding command.  */
@@ -96,8 +106,10 @@
 #define HARDDOOM_TRIGGER_DRAW_SPAN		0x0d0
 #define HARDDOOM_TRIGGER_DRAW_COLUMN		0x0d4
 
-#define HARDDOOM_TRIGGER_INTERLOCK		0x0f8
-#define HARDDOOM_TRIGGER_SYNC			0x0fc
+#define HARDDOOM_TRIGGER_FENCE			0x0f0
+#define HARDDOOM_TRIGGER_PING_SYNC		0x0f4
+#define HARDDOOM_TRIGGER_PING_ASYNC		0x0f8
+#define HARDDOOM_TRIGGER_INTERLOCK		0x0fc
 
 /* The single-entry TLBs, one for each paged buffer.
  * Tags have bits 000007ff: bits 0-9 are virtual page index, bit 10
@@ -161,10 +173,6 @@
 #define HARDDOOM_CACHE_SIZE			0x100
 #define HARDDOOM_CACHE_SHIFT			8
 
-/* The contents of the FIFO (internal).  */
-#define HARDDOOM_FIFO_CMD(x)			(0x800 + (x) * 4)
-#define HARDDOOM_FIFO_CMD_NUM			0x200
-
 
 /* Commands */
 
@@ -224,10 +232,14 @@
 /* R_DrawSpan. */
 #define HARDDOOM_CMD_TYPE_DRAW_SPAN		0x35
 
-/* Block further surface reads until inflight surface writes are complete.  */
-#define HARDDOOM_CMD_TYPE_INTERLOCK		0x3e
 /* Set the sync counter.  */
-#define HARDDOOM_CMD_TYPE_SYNC			0x3f
+#define HARDDOOM_CMD_TYPE_FENCE			0x3c
+/* Trigger an interrupt once we're done with current work.  */
+#define HARDDOOM_CMD_TYPE_PING_SYNC		0x3d
+/* Trigger an interrupt nowr.  */
+#define HARDDOOM_CMD_TYPE_PING_ASYNC		0x3e
+/* Block further surface reads until inflight surface writes are complete.  */
+#define HARDDOOM_CMD_TYPE_INTERLOCK		0x3f
 
 #define HARDDOOM_DRAW_PARAMS_FUZZ		0x1
 #define HARDDOOM_DRAW_PARAMS_TRANSLATE		0x2
@@ -252,12 +264,14 @@
 #define HARDDOOM_CMD_DRAW_PARAMS(flags	)	(HARDDOOM_CMD_TYPE_DRAW_PARAMS << 26 | (flags))
 #define HARDDOOM_CMD_XY_A(x, y)			(HARDDOOM_CMD_TYPE_XY_A << 26 | (y) << 12 | (x))
 #define HARDDOOM_CMD_XY_B(x, y)			(HARDDOOM_CMD_TYPE_XY_B << 26 | (y) << 12 | (x))
-#define HARDDOOM_CMD_USTART(arg)		(HARDDOOM_CMD_TYPE_XSTART << 26 | (arg))
-#define HARDDOOM_CMD_VSTART(arg)		(HARDDOOM_CMD_TYPE_YSTART << 26 | (arg))
-#define HARDDOOM_CMD_USTEP(arg)			(HARDDOOM_CMD_TYPE_XSTEP << 26 | (arg))
-#define HARDDOOM_CMD_VSTEP(arg)			(HARDDOOM_CMD_TYPE_YSTEP << 26 | (arg))
+#define HARDDOOM_CMD_USTART(arg)		(HARDDOOM_CMD_TYPE_USTART << 26 | (arg))
+#define HARDDOOM_CMD_VSTART(arg)		(HARDDOOM_CMD_TYPE_VSTART << 26 | (arg))
+#define HARDDOOM_CMD_USTEP(arg)			(HARDDOOM_CMD_TYPE_USTEP << 26 | (arg))
+#define HARDDOOM_CMD_VSTEP(arg)			(HARDDOOM_CMD_TYPE_VSTEP << 26 | (arg))
+#define HARDDOOM_CMD_FENCE(arg)			(HARDDOOM_CMD_TYPE_FENCE << 26 | (arg))
+#define HARDDOOM_CMD_PING_SYNC			(HARDDOOM_CMD_TYPE_PING_SYNC << 26)
+#define HARDDOOM_CMD_PING_ASYNC			(HARDDOOM_CMD_TYPE_PING_ASYNC << 26)
 #define HARDDOOM_CMD_INTERLOCK			(HARDDOOM_CMD_TYPE_INTERLOCK << 26)
-#define HARDDOOM_CMD_SYNC(arg)			(HARDDOOM_CMD_TYPE_SYNC << 26 | (arg))
 
 #define HARDDOOM_CMD_EXTR_TYPE_HI(cmd)		((cmd) >> 30 & 0x3)
 #define HARDDOOM_CMD_EXTR_JUMP_ADDR(cmd)	((cmd) << 2 & 0xfffffffc)
@@ -276,7 +290,7 @@
 #define HARDDOOM_CMD_EXTR_XY_X(cmd)		((cmd) & 0x7ff)
 #define HARDDOOM_CMD_EXTR_XY_Y(cmd)		((cmd) >> 12 & 0x7ff)
 #define HARDDOOM_CMD_EXTR_TEX_COORD(cmd)	((cmd) & 0x3ffffff)
-#define HARDDOOM_CMD_EXTR_SYNC(cmd)		((cmd) & 0x3ffffff)
+#define HARDDOOM_CMD_EXTR_FENCE(cmd)		((cmd) & 0x3ffffff)
 
 /* Page tables */
 

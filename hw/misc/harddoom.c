@@ -25,8 +25,8 @@ typedef struct {
 	uint32_t status;
 	uint32_t intr;
 	uint32_t intr_enable;
-	uint32_t sync_last;
-	uint32_t sync_intr;
+	uint32_t fence_last;
+	uint32_t fence_wait;
 	uint32_t cmd_read_ptr;
 	uint32_t cmd_write_ptr;
 	uint32_t fifo_state;
@@ -56,7 +56,7 @@ typedef struct {
 	uint8_t cache_data_flat[HARDDOOM_CACHE_SIZE];
 	uint8_t cache_data_colormap[HARDDOOM_CACHE_SIZE];
 	uint8_t cache_data_translation[HARDDOOM_CACHE_SIZE];
-	uint32_t fifo_cmd[HARDDOOM_FIFO_CMD_NUM];
+	uint32_t fifo_data[HARDDOOM_FIFO_SIZE];
 	QEMUTimer *timer;
 	MemoryRegion mmio;
 } HardDoomState;
@@ -72,8 +72,8 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32(status, HardDoomState),
 		VMSTATE_UINT32(intr, HardDoomState),
 		VMSTATE_UINT32(intr_enable, HardDoomState),
-		VMSTATE_UINT32(sync_last, HardDoomState),
-		VMSTATE_UINT32(sync_intr, HardDoomState),
+		VMSTATE_UINT32(fence_last, HardDoomState),
+		VMSTATE_UINT32(fence_wait, HardDoomState),
 		VMSTATE_UINT32(cmd_read_ptr, HardDoomState),
 		VMSTATE_UINT32(cmd_write_ptr, HardDoomState),
 		VMSTATE_UINT32(fifo_state, HardDoomState),
@@ -103,13 +103,50 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT8_ARRAY(cache_data_flat, HardDoomState, HARDDOOM_CACHE_SIZE),
 		VMSTATE_UINT8_ARRAY(cache_data_colormap, HardDoomState, HARDDOOM_CACHE_SIZE),
 		VMSTATE_UINT8_ARRAY(cache_data_translation, HardDoomState, HARDDOOM_CACHE_SIZE),
-		VMSTATE_UINT32_ARRAY(fifo_cmd, HardDoomState, HARDDOOM_FIFO_CMD_NUM),
+		VMSTATE_UINT32_ARRAY(fifo_data, HardDoomState, HARDDOOM_FIFO_SIZE),
 		VMSTATE_END_OF_LIST()
 	}
 };
 
 static uint32_t le32_read(uint8_t *ptr) {
 	return ptr[0] | ptr[1] << 8 | ptr[2] << 16 | ptr[3] << 24;
+}
+
+/* Returns number of free slots in the FIFO.  */
+static int harddoom_fifo_free(uint32_t state, uint32_t size) {
+	int rptr = state & 0xffff;
+	int wptr = state >> 16 & 0xffff;
+	int used = (wptr - rptr) & (2 * size - 1);
+	/* This considers overfull FIFO to have free slots.
+	 * It's part of the fun.  */
+	return (size - used) & (2 * size - 1);
+}
+
+/* Reads from a FIFO.  */
+static uint32_t harddoom_fifo_read(uint32_t *data, uint32_t *state, uint32_t size) {
+	int rptr = *state & 0xffff;
+	int wptr = *state >> 16 & 0xffff;
+	uint32_t res = data[rptr & (size - 1)];
+	rptr++;
+	rptr &= (2 * size - 1);
+	*state = wptr << 16 | rptr;
+	return res;
+}
+
+/* Writes to a FIFO.  */
+static void harddoom_fifo_write(uint32_t *data, uint32_t *state, uint32_t size, uint32_t value) {
+	int rptr = *state & 0xffff;
+	int wptr = *state >> 16 & 0xffff;
+	data[wptr & (size - 1)] = value;
+	wptr++;
+	wptr &= (2 * size - 1);
+	*state = wptr << 16 | rptr;
+}
+
+static int harddoom_fifo_can_read(uint32_t state) {
+	int rptr = state & 0xffff;
+	int wptr = state >> 16 & 0xffff;
+	return rptr != wptr;
 }
 
 /* Recomputes status register and PCI interrupt line.  */
@@ -120,25 +157,13 @@ static void harddoom_status_update(HardDoomState *d) {
 		HARDDOOM_DRAW_STATE_MODE_IDLE)
 		d->status |= HARDDOOM_STATUS_DRAW;
 	/* FIFO busy iff read != write.  */
-	int rptr = HARDDOOM_FIFO_STATE_READ(d->fifo_state);
-	int wptr = HARDDOOM_FIFO_STATE_WRITE(d->fifo_state);
-	if (rptr != wptr)
+	if (harddoom_fifo_can_read(d->fifo_state))
 		d->status |= HARDDOOM_STATUS_FIFO;
 	/* FETCH_CMD busy iff read != write.  */
 	if (d->cmd_read_ptr != d->cmd_write_ptr)
 		d->status |= HARDDOOM_STATUS_FETCH_CMD;
 	/* determine and set PCI interrupt status */
 	pci_set_irq(PCI_DEVICE(d), !!(d->intr & d->intr_enable));
-}
-
-/* Returns number of free slots in the FIFO.  */
-static int harddoom_fifo_free(HardDoomState *d) {
-	int rptr = HARDDOOM_FIFO_STATE_READ(d->fifo_state);
-	int wptr = HARDDOOM_FIFO_STATE_WRITE(d->fifo_state);
-	int used = (wptr - rptr) & HARDDOOM_FIFO_PTR_MASK;
-	/* This considers overfull FIFO to have free slots.
-	 * It's part of the fun.  */
-	return (HARDDOOM_FIFO_CMD_NUM - used) & HARDDOOM_FIFO_PTR_MASK;
 }
 
 /* Schedules our worker timer.  Should be called whenever device has new
@@ -154,7 +179,7 @@ static void harddoom_schedule(HardDoomState *d) {
 		!(d->status & HARDDOOM_STATUS_DRAW);
 	/* FETCH_CMD can feed FIFO.  */
 	bool fetch_cmd_busy = (d->status & HARDDOOM_STATUS_FETCH_CMD) &&
-		(d->enable & HARDDOOM_ENABLE_FETCH_CMD) && harddoom_fifo_free(d);
+		(d->enable & HARDDOOM_ENABLE_FETCH_CMD) && harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
 	/* no active blocks - return */
 	if (!draw_busy && !fifo_busy && !fetch_cmd_busy)
 		return;
@@ -237,10 +262,12 @@ static bool harddoom_valid_cmd(uint32_t val) {
 			return !(val & ~0xfc3fffff);
 		case HARDDOOM_CMD_TYPE_DRAW_SPAN:
 			return !(val & ~0xfc000000);
+		case HARDDOOM_CMD_TYPE_FENCE:
+			return !(val & ~0xffffffff);
+		case HARDDOOM_CMD_TYPE_PING_SYNC:
+		case HARDDOOM_CMD_TYPE_PING_ASYNC:
 		case HARDDOOM_CMD_TYPE_INTERLOCK:
 			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_SYNC:
-			return !(val & ~0xffffffff);
 		default:
 			return false;
 	}
@@ -252,21 +279,16 @@ static void harddoom_trigger(HardDoomState *d, uint32_t intr) {
 	harddoom_status_update(d);
 }
 
-/* Handles FIFO_SEND - appends a command to FIFO, or triggers INVALID_CMD
+/* Handles FIFO_SEND - appends a command to FIFO, or triggers FE_ERROR
  * or FIFO_OVERFLOW.  */
 static void harddoom_fifo_send(HardDoomState *d, uint32_t val) {
-	int free = harddoom_fifo_free(d);
+	int free = harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
 	if (!free) {
 		harddoom_trigger(d, HARDDOOM_INTR_FIFO_OVERFLOW);
 	} else if (!harddoom_valid_cmd(val)) {
-		harddoom_trigger(d, HARDDOOM_INTR_INVALID_CMD);
+		harddoom_trigger(d, HARDDOOM_INTR_FE_ERROR);
 	} else {
-		int rptr = HARDDOOM_FIFO_STATE_READ(d->fifo_state);
-		int wptr = HARDDOOM_FIFO_STATE_WRITE(d->fifo_state);
-		d->fifo_cmd[wptr & (HARDDOOM_FIFO_CMD_NUM - 1)] = val;
-		wptr++;
-		wptr &= HARDDOOM_FIFO_PTR_MASK;
-		d->fifo_state = rptr | wptr << 16;
+		harddoom_fifo_write(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE, val);
 		/* DRAW has work to do now.  */
 		harddoom_status_update(d);
 		harddoom_schedule(d);
@@ -597,12 +619,18 @@ static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
 	case HARDDOOM_CMD_TYPE_DRAW_SPAN:
 		harddoom_trigger_draw_span(d, val);
 		break;
-	case HARDDOOM_CMD_TYPE_INTERLOCK:
+	case HARDDOOM_CMD_TYPE_FENCE:
+		d->fence_last = val;
+		if (d->fence_wait == val)
+			harddoom_trigger(d, HARDDOOM_INTR_FENCE);
 		break;
-	case HARDDOOM_CMD_TYPE_SYNC:
-		d->sync_last = val;
-		if (d->sync_intr == val)
-			harddoom_trigger(d, HARDDOOM_INTR_SYNC);
+	case HARDDOOM_CMD_TYPE_PING_SYNC:
+		harddoom_trigger(d, HARDDOOM_INTR_PONG_SYNC);
+		break;
+	case HARDDOOM_CMD_TYPE_PING_ASYNC:
+		harddoom_trigger(d, HARDDOOM_INTR_PONG_ASYNC);
+		break;
+	case HARDDOOM_CMD_TYPE_INTERLOCK:
 		break;
 	default:
 		fprintf(stderr, "harddoom error: invalid command %d executed [param %08x]\n", cmd, val);
@@ -836,12 +864,7 @@ static void harddoom_tick_draw(HardDoomState *d) {
 			if (!(d->enable & HARDDOOM_ENABLE_FIFO))
 				return;
 			/* No drawing in progress, execute a command if there is one.  */
-			int rptr = HARDDOOM_FIFO_STATE_READ(d->fifo_state);
-			int wptr = HARDDOOM_FIFO_STATE_WRITE(d->fifo_state);
-			uint32_t cmd = d->fifo_cmd[rptr & 0x1ff];
-			rptr++;
-			rptr &= 0x3ff;
-			d->fifo_state = rptr | wptr << 16;
+			uint32_t cmd = harddoom_fifo_read(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE);
 			harddoom_do_command(d, HARDDOOM_CMD_EXTR_TYPE(cmd), cmd);
 		} else {
 			/* Nothing to do.  */
@@ -862,7 +885,7 @@ static void harddoom_tick_fetch_cmd(HardDoomState *d) {
 		if (!(d->status & HARDDOOM_STATUS_FETCH_CMD))
 			return;
 		/* Now, check if there's some place to put commands.  */
-		if (!harddoom_fifo_free(d))
+		if (!harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE))
 			return;
 		/* There are commands to read, and there's somewhere to put them. Do it.  */
 		uint8_t cmdb[4];
@@ -923,7 +946,6 @@ static void harddoom_mmio_writew(void *opaque, hwaddr addr, uint32_t val)
 
 static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 {
-	int i;
 	HardDoomState *d = opaque;
 	switch (addr) {
 	/* Documented registers.  */
@@ -957,18 +979,15 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 			fprintf(stderr, "harddoom error: invalid INTR_ENABLE value %08x\n", val);
 		harddoom_status_update(d);
 		return;
-	case HARDDOOM_SYNC_LAST:
-		d->sync_last = val;
-		if (val & ~HARDDOOM_SYNC_MASK)
-			fprintf(stderr, "harddoom error: invalid SYNC_LAST value %08x\n", val);
+	case HARDDOOM_FENCE_LAST:
+		d->fence_last = val;
+		if (val & ~HARDDOOM_FENCE_MASK)
+			fprintf(stderr, "harddoom error: invalid FENCE_LAST value %08x\n", val);
 		return;
-	case HARDDOOM_SYNC_INTR:
-		d->sync_intr = val;
-		if (val & ~HARDDOOM_SYNC_MASK)
-			fprintf(stderr, "harddoom error: invalid SYNC_INTR value %08x\n", val);
-		return;
-	case HARDDOOM_FIFO_SEND:
-		harddoom_fifo_send(d, val);
+	case HARDDOOM_FENCE_WAIT:
+		d->fence_wait = val;
+		if (val & ~HARDDOOM_FENCE_MASK)
+			fprintf(stderr, "harddoom error: invalid FENCE_WAIT value %08x\n", val);
 		return;
 	case HARDDOOM_CMD_READ_PTR:
 		if (val & 3) {
@@ -991,7 +1010,17 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 		harddoom_status_update(d);
 		harddoom_schedule(d);
 		return;
-	/* Undocumented registers -- direct access to TLB state.  */
+	case HARDDOOM_FIFO_SEND:
+		harddoom_fifo_send(d, val);
+		return;
+	/* Undocumented registers -- direct access to the FIFO.  */
+	case HARDDOOM_FIFO_STATE:
+		d->fifo_state = val & 0x03ff03ff;
+		return;
+	case HARDDOOM_FIFO_WINDOW:
+		harddoom_fifo_write(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE, val);
+		return;
+	/* And to the TLB.  */
 	case HARDDOOM_TLB_SURF_DST_TAG:
 		d->tlb_tag[TLB_SURF_DST] = val & (HARDDOOM_TLB_TAG_IDX_MASK | HARDDOOM_TLB_TAG_VALID);
 		return;
@@ -1044,20 +1073,10 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 	case HARDDOOM_CACHE_STATE:
 		d->cache_state = val & 0x111f7fff;
 		return;
-	/* And to the FIFO.  */
-	case HARDDOOM_FIFO_STATE:
-		d->fifo_state = val & 0x03ff03ff;
-		return;
 	}
 	/* Direct access to the commands.  */
-	if (addr >= HARDDOOM_STATE_SURF_DST_PT && addr <= HARDDOOM_TRIGGER_SYNC && !(addr & 3)) {
+	if (addr >= HARDDOOM_STATE_SURF_DST_PT && addr <= HARDDOOM_TRIGGER_INTERLOCK && !(addr & 3)) {
 		harddoom_do_command(d, addr >> 2 & 0x3f, val);
-		return;
-	}
-	/* And to the FIFO contents.  */
-	if ((addr & ~((HARDDOOM_FIFO_CMD_NUM - 1) << 2)) == HARDDOOM_FIFO_CMD(0)) {
-		i = addr >> 2 & (HARDDOOM_FIFO_CMD_NUM - 1);
-		d->fifo_cmd[i] = val;
 		return;
 	}
 	fprintf(stderr, "harddoom error: invalid register write at %03x, value %08x\n", (int)addr, val);
@@ -1096,7 +1115,6 @@ static uint32_t harddoom_mmio_readw(void *opaque, hwaddr addr)
 static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 {
 	HardDoomState *d = opaque;
-	int i;
 	switch(addr) {
 	/* Documented registers... */
 	case HARDDOOM_ENABLE:
@@ -1107,16 +1125,20 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 		return d->intr;
 	case HARDDOOM_INTR_ENABLE:
 		return d->intr_enable;
-	case HARDDOOM_SYNC_LAST:
-		return d->sync_last;
-	case HARDDOOM_SYNC_INTR:
-		return d->sync_intr;
+	case HARDDOOM_FENCE_LAST:
+		return d->fence_last;
+	case HARDDOOM_FENCE_WAIT:
+		return d->fence_wait;
 	case HARDDOOM_CMD_READ_PTR:
 		return d->cmd_read_ptr;
 	case HARDDOOM_CMD_WRITE_PTR:
 		return d->cmd_write_ptr;
 	case HARDDOOM_FIFO_FREE:
-		return harddoom_fifo_free(d);
+		return harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
+	case HARDDOOM_FIFO_STATE:
+		return d->fifo_state;
+	case HARDDOOM_FIFO_WINDOW:
+		return harddoom_fifo_read(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE);
 	/* Undocumented registers - direct TLB access.  */
 	case HARDDOOM_TLB_SURF_DST_TAG:
 		return d->tlb_tag[TLB_SURF_DST];
@@ -1185,13 +1207,6 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 	/* CACHE state.  */
 	case HARDDOOM_CACHE_STATE:
 		return d->cache_state;
-	/* FIFO access.  */
-	case HARDDOOM_FIFO_STATE:
-		return d->fifo_state;
-	}
-	if ((addr & ~((HARDDOOM_FIFO_CMD_NUM - 1) << 2)) == HARDDOOM_FIFO_CMD(0)) {
-		i = addr >> 2 & (HARDDOOM_FIFO_CMD_NUM - 1);
-		return d->fifo_cmd[i];
 	}
 	fprintf(stderr, "harddoom error: invalid register read at %03x\n", (int)addr);
 	return 0xffffffff;
@@ -1223,8 +1238,8 @@ static void harddoom_reset(DeviceState *d)
 	s->intr_enable = 0;
 	/* But these don't; hardware is evil. */
 	s->intr = mrand48() & HARDDOOM_INTR_MASK;
-	s->sync_last = mrand48() & HARDDOOM_SYNC_MASK;
-	s->sync_intr = mrand48() & HARDDOOM_SYNC_MASK;
+	s->fence_last = mrand48() & HARDDOOM_FENCE_MASK;
+	s->fence_wait = mrand48() & HARDDOOM_FENCE_MASK;
 	s->cmd_read_ptr = mrand48() & ~3;
 	s->cmd_write_ptr = mrand48() & ~3;
 	for (i = 0; i < 3; i++) {
@@ -1262,8 +1277,8 @@ static void harddoom_reset(DeviceState *d)
 		s->cache_data_translation[i] = mrand48();
 	}
 	s->fifo_state = mrand48() & 0x03ff03ff;
-	for (i = 0; i < HARDDOOM_FIFO_CMD_NUM; i++)
-		s->fifo_cmd[i] = mrand48();
+	for (i = 0; i < HARDDOOM_FIFO_SIZE; i++)
+		s->fifo_data[i] = mrand48();
 	harddoom_status_update(s);
 }
 
