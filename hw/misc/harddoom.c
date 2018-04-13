@@ -643,7 +643,7 @@ static void harddoom_draw_work_line(HardDoomState *d) {
 	int y = d->draw_y_cur & HARDDOOM_COORD_MASK;
 	int x_e = d->draw_end & HARDDOOM_COORD_MASK;
 	int y_e = d->draw_end >> 16 & HARDDOOM_COORD_MASK;
-	int line_d = d->draw_state & HARDDOOM_DRAW_STATE_LINE_D_MASK >> HARDDOOM_DRAW_STATE_LINE_D_SHIFT;
+	int line_d = (d->draw_state & HARDDOOM_DRAW_STATE_LINE_D_MASK) >> HARDDOOM_DRAW_STATE_LINE_D_SHIFT;
 	if (line_d & 0x1000)
 		line_d -= 0x2000;
 	int ax = d->draw_line_size & HARDDOOM_COORD_MASK;
@@ -666,6 +666,12 @@ static void harddoom_draw_work_line(HardDoomState *d) {
 			return;
 		uint8_t color = d->state_fill_color;
 		pci_dma_write(&d->dev, phys, &color, 1);
+		if (x == x_e && y == y_e) {
+			/* We're done here.  */
+			d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
+			harddoom_status_update(d);
+			return;
+		}
 		/* Now, the Bresenham algorithm.  */
 		if (d->draw_state & HARDDOOM_DRAW_STATE_LINE_X_MAJOR) {
 			if (line_d >= 0) {
@@ -689,12 +695,6 @@ static void harddoom_draw_work_line(HardDoomState *d) {
 		d->draw_y_cur |= y;
 		d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_D_MASK;
 		d->draw_state |= line_d << HARDDOOM_DRAW_STATE_LINE_D_SHIFT & HARDDOOM_DRAW_STATE_LINE_D_MASK;
-		if (x == x_e && y == y_e) {
-			/* We're done here.  */
-			d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-			harddoom_status_update(d);
-			return;
-		}
 	}
 }
 
@@ -1324,11 +1324,17 @@ static void harddoom_class_init(ObjectClass *klass, void *data)
 	dc->props = harddoom_properties;
 }
 
+static InterfaceInfo harddoom_interfaces[] = {
+	{ INTERFACE_CONVENTIONAL_PCI_DEVICE },
+	{ },
+};
+
 static TypeInfo harddoom_info = {
 	.name          = "harddoom",
 	.parent        = TYPE_PCI_DEVICE,
 	.instance_size = sizeof(HardDoomState),
 	.class_init    = harddoom_class_init,
+	.interfaces    = harddoom_interfaces,
 };
 
 static void harddoom_register_types(void)
