@@ -1511,13 +1511,19 @@ static bool harddoom_tex_fill_cache(HardDoomState *d, uint32_t offset) {
 static uint32_t harddoom_tex_offset(HardDoomState *d, int x) {
 	int height = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->tex_dims);
 	uint32_t coord = d->tex_column_state[x] & HARDDOOM_TEX_COORD_MASK;
-	uint32_t offset = d->tex_column_offset[x] + (coord >> 16) % height;
+	int icoord = coord >> 16;
+	if (height)
+		icoord %= height;
+	uint32_t offset = d->tex_column_offset[x] + icoord;
 	return offset & HARDDOOM_TEX_OFFSET_MASK;
 }
 
 static void harddoom_tex_step(HardDoomState *d, int x) {
+	int height = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->tex_dims);
 	uint32_t coord = d->tex_column_state[x];
 	coord += d->tex_column_step[x];
+	if (height)
+		coord %= height << 16;
 	coord &= HARDDOOM_TEX_COORD_MASK;
 	d->tex_column_state[x] &= ~HARDDOOM_TEX_COORD_MASK;
 	d->tex_column_state[x] |= coord;
