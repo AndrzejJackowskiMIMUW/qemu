@@ -9,17 +9,17 @@
 
 #include "harddoom.h"
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "hw/hw.h"
 #include "hw/pci/pci.h"
 
-enum {
-	TLB_SURF_DST = 0,
-	TLB_SURF_SRC = 1,
-	TLB_TEXTURE = 2,
-};
-
 typedef struct {
 	PCIDevice dev;
+	MemoryRegion mmio;
+	QemuThread thread;
+	QemuMutex mutex;
+	QemuCond cond;
+	bool stopping;
 	/* These correspond directly to the registers listed in harddoom.h.  */
 	uint32_t enable;
 	uint32_t status;
@@ -29,36 +29,82 @@ typedef struct {
 	uint32_t fence_wait;
 	uint32_t cmd_read_ptr;
 	uint32_t cmd_write_ptr;
+	uint32_t fe_code_addr;
+	uint32_t fe_code[HARDDOOM_FE_CODE_SIZE];
+	uint32_t fe_error_code;
+	uint32_t fe_error_cmd;
+	uint32_t fe_state;
 	uint32_t fifo_state;
-	uint32_t state_pt[3];
-	uint32_t state_colormap_addr[2];
-	uint32_t state_flat_addr;
-	uint32_t state_surf_dims;
-	uint32_t state_texture_dims;
-	uint32_t state_fill_color;
-	uint32_t state_xy[2];
-	uint32_t state_draw_params;
-	uint32_t state_uvstart[2];
-	uint32_t state_uvstep[2];
-	uint32_t tlb_tag[3];
-	uint32_t tlb_pte[3];
-	uint32_t cache_state;
-	uint32_t draw_x_cur;
-	uint32_t draw_y_cur;
-	uint32_t draw_x_restart;
-	uint32_t draw_end;
-	uint32_t draw_texcoord_u;
-	uint32_t draw_texcoord_v;
-	uint32_t draw_state;
-	uint32_t draw_line_size;
-	uint32_t draw_column_offset;
-	uint8_t cache_data_texture[HARDDOOM_CACHE_SIZE];
-	uint8_t cache_data_flat[HARDDOOM_CACHE_SIZE];
-	uint8_t cache_data_colormap[HARDDOOM_CACHE_SIZE];
-	uint8_t cache_data_translation[HARDDOOM_CACHE_SIZE];
 	uint32_t fifo_data[HARDDOOM_FIFO_SIZE];
-	QEMUTimer *timer;
-	MemoryRegion mmio;
+	uint32_t fe_data_addr;
+	uint32_t fe_data[HARDDOOM_FE_DATA_SIZE];
+	uint32_t fe2xy_state;
+	uint32_t fe2xy_data[HARDDOOM_FE2XY_SIZE];
+	uint32_t fe2tex_state;
+	uint32_t fe2tex_data[HARDDOOM_FE2TEX_SIZE];
+	uint32_t fe2flat_state;
+	uint32_t fe2flat_data[HARDDOOM_FE2FLAT_SIZE];
+	uint32_t fe2fuzz_state;
+	uint32_t fe2fuzz_data[HARDDOOM_FE2FUZZ_SIZE];
+	uint32_t fe2og_state;
+	uint32_t fe2og_data[HARDDOOM_FE2OG_SIZE];
+	uint32_t fe_reg[HARDDOOM_FE_REG_NUM];
+	uint32_t stats[HARDDOOM_STATS_NUM];
+	uint32_t xy_surf_dims;
+	uint32_t xy_cmd;
+	uint32_t xy_dst_cmd;
+	uint32_t xy_src_cmd;
+	uint32_t xy2sw_state;
+	uint32_t xy2sw_data[HARDDOOM_XY2SW_SIZE];
+	uint32_t xy2sr_state;
+	uint32_t xy2sr_data[HARDDOOM_XY2SR_SIZE];
+	uint32_t sr2og_state;
+	uint8_t sr2og_data[HARDDOOM_SR2OG_SIZE * HARDDOOM_BLOCK_SIZE];
+	uint32_t tex_dims;
+	uint32_t tex_ustart;
+	uint32_t tex_ustep;
+	uint32_t tex_cmd;
+	uint32_t tex_cache_state;
+	uint64_t tex_mask;
+	uint8_t tex_cache[HARDDOOM_TEX_CACHE_SIZE];
+	uint32_t tex_column_state[HARDDOOM_BLOCK_SIZE];
+	uint32_t tex_column_step[HARDDOOM_BLOCK_SIZE];
+	uint32_t tex_column_offset[HARDDOOM_BLOCK_SIZE];
+	uint8_t tex_column_spec_data[HARDDOOM_BLOCK_SIZE * HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE];
+	uint32_t tex2og_state;
+	uint8_t tex2og_data[HARDDOOM_TEX2OG_SIZE * HARDDOOM_BLOCK_SIZE];
+	uint64_t tex2og_mask[HARDDOOM_TEX2OG_SIZE];
+	uint32_t flat_ucoord;
+	uint32_t flat_vcoord;
+	uint32_t flat_ustep;
+	uint32_t flat_vstep;
+	uint32_t flat_addr;
+	uint32_t flat_cmd;
+	uint32_t flat_cache_state;
+	uint8_t flat_cache[HARDDOOM_FLAT_CACHE_SIZE];
+	uint32_t flat2og_state;
+	uint8_t flat2og_data[HARDDOOM_FLAT2OG_SIZE * HARDDOOM_BLOCK_SIZE];
+	uint32_t fuzz_cmd;
+	uint8_t fuzz_position[HARDDOOM_BLOCK_SIZE];
+	uint32_t fuzz2og_state;
+	uint64_t fuzz2og_mask[HARDDOOM_FUZZ2OG_SIZE];
+	uint32_t og_cmd;
+	uint32_t og_misc;
+	uint64_t og_mask;
+	uint64_t og_fuzz_mask;
+	uint8_t og_buf[HARDDOOM_OG_BUF_SIZE];
+	uint8_t og_colormap[HARDDOOM_COLORMAP_SIZE];
+	uint8_t og_translation[HARDDOOM_COLORMAP_SIZE];
+	uint32_t og2sw_state;
+	uint8_t og2sw_data[HARDDOOM_OG2SW_SIZE * HARDDOOM_BLOCK_SIZE];
+	uint64_t og2sw_mask[HARDDOOM_OG2SW_SIZE];
+	uint32_t og2sw_c_state;
+	uint32_t og2sw_c_data[HARDDOOM_OG2SW_C_SIZE];
+	uint32_t sw_cmd;
+	uint32_t sw2xy_state;
+	uint32_t tlb_pt[3];
+	uint32_t tlb_entry[3];
+	uint32_t tlb_vaddr[3];
 } HardDoomState;
 
 static const VMStateDescription vmstate_harddoom = {
@@ -76,867 +122,519 @@ static const VMStateDescription vmstate_harddoom = {
 		VMSTATE_UINT32(fence_wait, HardDoomState),
 		VMSTATE_UINT32(cmd_read_ptr, HardDoomState),
 		VMSTATE_UINT32(cmd_write_ptr, HardDoomState),
+		VMSTATE_UINT32(fe_code_addr, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe_code, HardDoomState, HARDDOOM_FE_CODE_SIZE),
+		VMSTATE_UINT32(fe_error_code, HardDoomState),
+		VMSTATE_UINT32(fe_error_cmd, HardDoomState),
+		VMSTATE_UINT32(fe_state, HardDoomState),
 		VMSTATE_UINT32(fifo_state, HardDoomState),
-		VMSTATE_UINT32_ARRAY(state_pt, HardDoomState, 3),
-		VMSTATE_UINT32_ARRAY(state_colormap_addr, HardDoomState, 2),
-		VMSTATE_UINT32(state_flat_addr, HardDoomState),
-		VMSTATE_UINT32(state_surf_dims, HardDoomState),
-		VMSTATE_UINT32(state_texture_dims, HardDoomState),
-		VMSTATE_UINT32(state_fill_color, HardDoomState),
-		VMSTATE_UINT32_ARRAY(state_xy, HardDoomState, 2),
-		VMSTATE_UINT32(state_draw_params, HardDoomState),
-		VMSTATE_UINT32_ARRAY(state_uvstart, HardDoomState, 2),
-		VMSTATE_UINT32_ARRAY(state_uvstep, HardDoomState, 2),
-		VMSTATE_UINT32_ARRAY(tlb_tag, HardDoomState, 3),
-		VMSTATE_UINT32_ARRAY(tlb_pte, HardDoomState, 3),
-		VMSTATE_UINT32(cache_state, HardDoomState),
-		VMSTATE_UINT32(draw_x_cur, HardDoomState),
-		VMSTATE_UINT32(draw_y_cur, HardDoomState),
-		VMSTATE_UINT32(draw_x_restart, HardDoomState),
-		VMSTATE_UINT32(draw_end, HardDoomState),
-		VMSTATE_UINT32(draw_texcoord_u, HardDoomState),
-		VMSTATE_UINT32(draw_texcoord_v, HardDoomState),
-		VMSTATE_UINT32(draw_state, HardDoomState),
-		VMSTATE_UINT32(draw_line_size, HardDoomState),
-		VMSTATE_UINT32(draw_column_offset, HardDoomState),
-		VMSTATE_UINT8_ARRAY(cache_data_texture, HardDoomState, HARDDOOM_CACHE_SIZE),
-		VMSTATE_UINT8_ARRAY(cache_data_flat, HardDoomState, HARDDOOM_CACHE_SIZE),
-		VMSTATE_UINT8_ARRAY(cache_data_colormap, HardDoomState, HARDDOOM_CACHE_SIZE),
-		VMSTATE_UINT8_ARRAY(cache_data_translation, HardDoomState, HARDDOOM_CACHE_SIZE),
 		VMSTATE_UINT32_ARRAY(fifo_data, HardDoomState, HARDDOOM_FIFO_SIZE),
+		VMSTATE_UINT32(fe_data_addr, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe_data, HardDoomState, HARDDOOM_FE_DATA_SIZE),
+		VMSTATE_UINT32(fe2xy_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe2xy_data, HardDoomState, HARDDOOM_FE2XY_SIZE),
+		VMSTATE_UINT32(fe2tex_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe2tex_data, HardDoomState, HARDDOOM_FE2TEX_SIZE),
+		VMSTATE_UINT32(fe2flat_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe2flat_data, HardDoomState, HARDDOOM_FE2FLAT_SIZE),
+		VMSTATE_UINT32(fe2fuzz_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe2fuzz_data, HardDoomState, HARDDOOM_FE2FUZZ_SIZE),
+		VMSTATE_UINT32(fe2og_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(fe2og_data, HardDoomState, HARDDOOM_FE2OG_SIZE),
+		VMSTATE_UINT32_ARRAY(fe_reg, HardDoomState, HARDDOOM_FE_REG_NUM),
+		VMSTATE_UINT32_ARRAY(stats, HardDoomState, HARDDOOM_STATS_NUM),
+		VMSTATE_UINT32(xy_surf_dims, HardDoomState),
+		VMSTATE_UINT32(xy_cmd, HardDoomState),
+		VMSTATE_UINT32(xy_dst_cmd, HardDoomState),
+		VMSTATE_UINT32(xy_src_cmd, HardDoomState),
+		VMSTATE_UINT32(xy2sw_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(xy2sw_data, HardDoomState, HARDDOOM_XY2SW_SIZE),
+		VMSTATE_UINT32(xy2sr_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(xy2sr_data, HardDoomState, HARDDOOM_XY2SR_SIZE),
+		VMSTATE_UINT32(sr2og_state, HardDoomState),
+		VMSTATE_UINT8_ARRAY(sr2og_data, HardDoomState, HARDDOOM_SR2OG_SIZE * HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT32(tex_dims, HardDoomState),
+		VMSTATE_UINT32(tex_ustart, HardDoomState),
+		VMSTATE_UINT32(tex_ustep, HardDoomState),
+		VMSTATE_UINT32(tex_cmd, HardDoomState),
+		VMSTATE_UINT32(tex_cache_state, HardDoomState),
+		VMSTATE_UINT64(tex_mask, HardDoomState),
+		VMSTATE_UINT8_ARRAY(tex_cache, HardDoomState, HARDDOOM_TEX_CACHE_SIZE),
+		VMSTATE_UINT32_ARRAY(tex_column_state, HardDoomState, HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT32_ARRAY(tex_column_step, HardDoomState, HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT32_ARRAY(tex_column_offset, HardDoomState, HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT8_ARRAY(tex_column_spec_data, HardDoomState, HARDDOOM_BLOCK_SIZE * HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE),
+		VMSTATE_UINT32(tex2og_state, HardDoomState),
+		VMSTATE_UINT8_ARRAY(tex2og_data, HardDoomState, HARDDOOM_TEX2OG_SIZE * HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT64_ARRAY(tex2og_mask, HardDoomState, HARDDOOM_TEX2OG_SIZE),
+		VMSTATE_UINT32(flat_ucoord, HardDoomState),
+		VMSTATE_UINT32(flat_vcoord, HardDoomState),
+		VMSTATE_UINT32(flat_ustep, HardDoomState),
+		VMSTATE_UINT32(flat_vstep, HardDoomState),
+		VMSTATE_UINT32(flat_addr, HardDoomState),
+		VMSTATE_UINT32(flat_cmd, HardDoomState),
+		VMSTATE_UINT32(flat_cache_state, HardDoomState),
+		VMSTATE_UINT8_ARRAY(flat_cache, HardDoomState, HARDDOOM_FLAT_CACHE_SIZE),
+		VMSTATE_UINT32(flat2og_state, HardDoomState),
+		VMSTATE_UINT8_ARRAY(flat2og_data, HardDoomState, HARDDOOM_FLAT2OG_SIZE * HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT32(fuzz_cmd, HardDoomState),
+		VMSTATE_UINT8_ARRAY(fuzz_position, HardDoomState, HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT32(fuzz2og_state, HardDoomState),
+		VMSTATE_UINT64_ARRAY(fuzz2og_mask, HardDoomState, HARDDOOM_FUZZ2OG_SIZE),
+		VMSTATE_UINT32(og_cmd, HardDoomState),
+		VMSTATE_UINT32(og_misc, HardDoomState),
+		VMSTATE_UINT64(og_mask, HardDoomState),
+		VMSTATE_UINT64(og_fuzz_mask, HardDoomState),
+		VMSTATE_UINT8_ARRAY(og_buf, HardDoomState, HARDDOOM_OG_BUF_SIZE),
+		VMSTATE_UINT8_ARRAY(og_colormap, HardDoomState, HARDDOOM_COLORMAP_SIZE),
+		VMSTATE_UINT8_ARRAY(og_translation, HardDoomState, HARDDOOM_COLORMAP_SIZE),
+		VMSTATE_UINT32(og2sw_state, HardDoomState),
+		VMSTATE_UINT8_ARRAY(og2sw_data, HardDoomState, HARDDOOM_OG2SW_SIZE * HARDDOOM_BLOCK_SIZE),
+		VMSTATE_UINT64_ARRAY(og2sw_mask, HardDoomState, HARDDOOM_OG2SW_SIZE),
+		VMSTATE_UINT32(og2sw_c_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(og2sw_c_data, HardDoomState, HARDDOOM_OG2SW_C_SIZE),
+		VMSTATE_UINT32(sw_cmd, HardDoomState),
+		VMSTATE_UINT32(sw2xy_state, HardDoomState),
+		VMSTATE_UINT32_ARRAY(tlb_pt, HardDoomState, 3),
+		VMSTATE_UINT32_ARRAY(tlb_entry, HardDoomState, 3),
+		VMSTATE_UINT32_ARRAY(tlb_vaddr, HardDoomState, 3),
 		VMSTATE_END_OF_LIST()
 	}
+};
+
+enum {
+	TLB_SURF_DST = 0,
+	TLB_SURF_SRC = 1,
+	TLB_TEXTURE = 2,
+};
+
+#define TLB(u, n) {HARDDOOM_ENABLE_ ## u, HARDDOOM_STAT_TLB_REBIND_ ## n, HARDDOOM_STAT_TLB_ ## n ## _HIT, HARDDOOM_STAT_TLB_ ## n ##_MISS}
+struct harddoom_tlb {
+	uint32_t enable;
+	int rebind_stats_idx;
+	int hit_stats_idx;
+	int miss_stats_idx;
+} harddoom_tlbs[] = {
+	[TLB_SURF_DST] = TLB(XY, SURF_DST),
+	[TLB_SURF_SRC] = TLB(XY, SURF_SRC),
+	[TLB_TEXTURE] = TLB(TEX, TEXTURE),
+};
+
+enum {
+	REG_TYPE_SIMPLE_32,
+	REG_TYPE_WINDOW_32,
+	REG_TYPE_SIMPLE_8,
+	REG_TYPE_MASK,
+};
+
+#define REG(a, b, c) {a, offsetof(HardDoomState, b), 0, c, 1, REG_TYPE_SIMPLE_32, #a}
+#define ARRAY(a, b, c, n) {a, offsetof(HardDoomState, b), 0, c, n, REG_TYPE_SIMPLE_32, #a}
+#define BYTE_ARRAY(a, b, c, n) {a, offsetof(HardDoomState, b), 0, c, n, REG_TYPE_SIMPLE_8, #a}
+#define WINDOW(a, b, i, c, n) {a, offsetof(HardDoomState, b), offsetof(HardDoomState, i), c, n, REG_TYPE_WINDOW_32, #a}
+#define MASK(a, b) {a, offsetof(HardDoomState, b), 0, 0, 1, REG_TYPE_MASK, #a}
+static struct harddoom_register {
+	uint32_t bar_off;
+	ptrdiff_t vm_off;
+	ptrdiff_t vm_off_idx;
+	uint32_t mask;
+	int num;
+	int type;
+	const char *name;
+} harddoom_registers[] = {
+	REG(HARDDOOM_ENABLE, enable, HARDDOOM_ENABLE_ALL),
+	REG(HARDDOOM_INTR_ENABLE, intr_enable, HARDDOOM_INTR_MASK),
+	REG(HARDDOOM_FENCE_LAST, fence_last, HARDDOOM_FENCE_MASK),
+	REG(HARDDOOM_FENCE_WAIT, fence_wait, HARDDOOM_FENCE_MASK),
+	REG(HARDDOOM_CMD_READ_PTR, cmd_read_ptr, ~3),
+	REG(HARDDOOM_CMD_WRITE_PTR, cmd_write_ptr, ~3),
+	REG(HARDDOOM_FE_CODE_ADDR, fe_code_addr, HARDDOOM_FE_CODE_SIZE - 1),
+	WINDOW(HARDDOOM_FE_CODE_WINDOW, fe_code, fe_code_addr, 0x3fffffff, HARDDOOM_FE_CODE_SIZE),
+	REG(HARDDOOM_FE_ERROR_CODE, fe_error_code, HARDDOOM_FE_ERROR_CODE_MASK),
+	REG(HARDDOOM_FE_ERROR_CMD, fe_error_cmd, ~0),
+	REG(HARDDOOM_FE_STATE, fe_state, HARDDOOM_FE_STATE_MASK),
+	REG(HARDDOOM_FE_DATA_ADDR, fe_data_addr, HARDDOOM_FE_DATA_SIZE - 1),
+	WINDOW(HARDDOOM_FE_DATA_WINDOW, fe_data, fe_data_addr, ~0, HARDDOOM_FE_DATA_SIZE),
+	ARRAY(HARDDOOM_FE_REG(0), fe_reg, ~0, HARDDOOM_FE_REG_NUM),
+	ARRAY(HARDDOOM_STATS(0), stats, ~0, HARDDOOM_STATS_NUM),
+	REG(HARDDOOM_XY_SURF_DIMS, xy_surf_dims, HARDDOOM_XY_SURF_DIMS_MASK),
+	REG(HARDDOOM_XY_CMD, xy_cmd, ~0),
+	REG(HARDDOOM_XY_DST_CMD, xy_dst_cmd, ~0),
+	REG(HARDDOOM_XY_SRC_CMD, xy_src_cmd, ~0),
+	REG(HARDDOOM_TLB_PT_SURF_DST, tlb_pt[TLB_SURF_DST], HARDDOOM_TLB_PT_MASK),
+	REG(HARDDOOM_TLB_PT_SURF_SRC, tlb_pt[TLB_SURF_SRC], HARDDOOM_TLB_PT_MASK),
+	REG(HARDDOOM_TLB_PT_TEXTURE, tlb_pt[TLB_TEXTURE], HARDDOOM_TLB_PT_MASK),
+	REG(HARDDOOM_TLB_ENTRY_SURF_DST, tlb_entry[TLB_SURF_DST], HARDDOOM_TLB_ENTRY_MASK),
+	REG(HARDDOOM_TLB_ENTRY_SURF_SRC, tlb_entry[TLB_SURF_SRC], HARDDOOM_TLB_ENTRY_MASK),
+	REG(HARDDOOM_TLB_ENTRY_TEXTURE, tlb_entry[TLB_TEXTURE], HARDDOOM_TLB_ENTRY_MASK),
+	REG(HARDDOOM_TLB_VADDR_SURF_DST, tlb_vaddr[TLB_SURF_DST], HARDDOOM_TLB_VADDR_MASK),
+	REG(HARDDOOM_TLB_VADDR_SURF_SRC, tlb_vaddr[TLB_SURF_SRC], HARDDOOM_TLB_VADDR_MASK),
+	REG(HARDDOOM_TLB_VADDR_TEXTURE, tlb_vaddr[TLB_TEXTURE], HARDDOOM_TLB_VADDR_MASK),
+	REG(HARDDOOM_TEX_DIMS, tex_dims, HARDDOOM_TEX_DIMS_MASK),
+	REG(HARDDOOM_TEX_USTART, tex_ustart, HARDDOOM_TEX_COORD_MASK),
+	REG(HARDDOOM_TEX_USTEP, tex_ustep, HARDDOOM_TEX_COORD_MASK),
+	REG(HARDDOOM_TEX_CMD, tex_cmd, ~0),
+	REG(HARDDOOM_TEX_CACHE_STATE, tex_cache_state, HARDDOOM_TEX_CACHE_STATE_MASK),
+	MASK(HARDDOOM_TEX_MASK, tex_mask),
+	BYTE_ARRAY(HARDDOOM_TEX_CACHE, tex_cache, 0xff, HARDDOOM_TEX_CACHE_SIZE),
+	ARRAY(HARDDOOM_TEX_COLUMN_STATE(0), tex_column_state, HARDDOOM_TEX_COLUMN_STATE_MASK, HARDDOOM_BLOCK_SIZE),
+	ARRAY(HARDDOOM_TEX_COLUMN_STEP(0), tex_column_step, HARDDOOM_TEX_COORD_MASK, HARDDOOM_BLOCK_SIZE),
+	ARRAY(HARDDOOM_TEX_COLUMN_OFFSET(0), tex_column_offset, HARDDOOM_TEX_OFFSET_MASK, HARDDOOM_BLOCK_SIZE),
+	BYTE_ARRAY(HARDDOOM_TEX_COLUMN_SPEC_DATA(0), tex_column_spec_data, 0xff, HARDDOOM_BLOCK_SIZE * HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE),
+	REG(HARDDOOM_FLAT_UCOORD, flat_ucoord, HARDDOOM_FLAT_COORD_MASK),
+	REG(HARDDOOM_FLAT_VCOORD, flat_vcoord, HARDDOOM_FLAT_COORD_MASK),
+	REG(HARDDOOM_FLAT_USTEP, flat_ustep, HARDDOOM_FLAT_COORD_MASK),
+	REG(HARDDOOM_FLAT_VSTEP, flat_vstep, HARDDOOM_FLAT_COORD_MASK),
+	REG(HARDDOOM_FLAT_ADDR, flat_addr, HARDDOOM_FLAT_ADDR_MASK),
+	REG(HARDDOOM_FLAT_CMD, flat_cmd, ~0),
+	REG(HARDDOOM_FLAT_CACHE_STATE, flat_cache_state, HARDDOOM_FLAT_CACHE_STATE_MASK),
+	BYTE_ARRAY(HARDDOOM_FLAT_CACHE, flat_cache, 0xff, HARDDOOM_FLAT_CACHE_SIZE),
+	REG(HARDDOOM_FUZZ_CMD, fuzz_cmd, ~0),
+	BYTE_ARRAY(HARDDOOM_FUZZ_POSITION, fuzz_position, 0x3f, HARDDOOM_BLOCK_SIZE),
+	REG(HARDDOOM_OG_CMD, og_cmd, ~0),
+	REG(HARDDOOM_OG_MISC, og_misc, HARDDOOM_OG_MISC_MASK),
+	MASK(HARDDOOM_OG_MASK, og_mask),
+	MASK(HARDDOOM_OG_FUZZ_MASK, og_fuzz_mask),
+	BYTE_ARRAY(HARDDOOM_OG_BUF, og_buf, 0xff, HARDDOOM_OG_BUF_SIZE),
+	BYTE_ARRAY(HARDDOOM_OG_COLORMAP, og_colormap, 0xff, HARDDOOM_COLORMAP_SIZE),
+	BYTE_ARRAY(HARDDOOM_OG_TRANSLATION, og_translation, 0xff, HARDDOOM_COLORMAP_SIZE),
+	REG(HARDDOOM_SW_CMD, sw_cmd, ~0),
+	REG(HARDDOOM_SW2XY_STATE, sw2xy_state, HARDDOOM_SW2XY_STATE_MASK),
+};
+
+enum {
+	FIFO_MAIN,
+	FIFO_FE2XY,
+	FIFO_FE2TEX,
+	FIFO_FE2FLAT,
+	FIFO_FE2FUZZ,
+	FIFO_FE2OG,
+	FIFO_XY2SR,
+	FIFO_XY2SW,
+	FIFO_SR2OG,
+	FIFO_TEX2OG,
+	FIFO_FLAT2OG,
+	FIFO_FUZZ2OG,
+	FIFO_OG2SW,
+	FIFO_OG2SW_C,
+};
+
+enum {
+	FIFO_TYPE_32,
+	FIFO_TYPE_BLOCK,
+	FIFO_TYPE_BLOCK_MASK,
+	FIFO_TYPE_MASK,
+};
+
+#define FIFO_32(a, b, s) {HARDDOOM_ ## a ## _STATE, HARDDOOM_ ## a ##_WINDOW, 0, offsetof(HardDoomState, b ## _state), offsetof(HardDoomState, b ## _data), 0, FIFO_TYPE_32, HARDDOOM_ ## a ## _SIZE, #a, HARDDOOM_RESET_ ## a, HARDDOOM_STATUS_ ## a, s}
+#define FIFO_BLOCK(a, b, s) {HARDDOOM_ ## a ## _STATE, HARDDOOM_ ## a ##_WINDOW, 0, offsetof(HardDoomState, b ## _state), offsetof(HardDoomState, b ## _data), 0, FIFO_TYPE_BLOCK, HARDDOOM_ ## a ## _SIZE, #a, HARDDOOM_RESET_ ## a, HARDDOOM_STATUS_ ## a, s}
+#define FIFO_BLOCK_MASK(a, b, s) {HARDDOOM_ ## a ## _STATE, HARDDOOM_ ## a ##_D_WINDOW, HARDDOOM_ ## a ## _M_WINDOW, offsetof(HardDoomState, b ## _state), offsetof(HardDoomState, b ## _data), offsetof(HardDoomState, b ## _mask), FIFO_TYPE_BLOCK_MASK, HARDDOOM_ ## a ## _SIZE, #a, HARDDOOM_RESET_ ## a, HARDDOOM_STATUS_ ## a, s}
+#define FIFO_MASK(a, b, s) {HARDDOOM_ ## a ## _STATE, 0, HARDDOOM_ ## a ## _WINDOW, offsetof(HardDoomState, b ## _state), 0, offsetof(HardDoomState, b ## _mask), FIFO_TYPE_MASK, HARDDOOM_ ## a ## _SIZE, #a, HARDDOOM_RESET_ ## a, HARDDOOM_STATUS_ ## a, s}
+static struct harddoom_fifo {
+	uint32_t bar_off_state;
+	uint32_t bar_off_window;
+	uint32_t bar_off_mask;
+	ptrdiff_t vm_off_state;
+	ptrdiff_t vm_off_data;
+	ptrdiff_t vm_off_mask;
+	int type;
+	uint32_t size;
+	const char *name;
+	uint32_t reset;
+	uint32_t status;
+	int stats_idx;
+} harddoom_fifos[] = {
+	[FIFO_MAIN] = FIFO_32(FIFO, fifo, HARDDOOM_STAT_FE_CMD),
+	[FIFO_FE2XY] = FIFO_32(FE2XY, fe2xy, HARDDOOM_STAT_XY_CMD),
+	[FIFO_FE2TEX] = FIFO_32(FE2TEX, fe2tex, HARDDOOM_STAT_TEX_CMD),
+	[FIFO_FE2FLAT] = FIFO_32(FE2FLAT, fe2flat, HARDDOOM_STAT_FLAT_CMD),
+	[FIFO_FE2FUZZ] = FIFO_32(FE2FUZZ, fe2fuzz, HARDDOOM_STAT_FUZZ_CMD),
+	[FIFO_FE2OG] = FIFO_32(FE2OG, fe2og, HARDDOOM_STAT_OG_CMD),
+	[FIFO_XY2SW] = FIFO_32(XY2SW, xy2sw, -1),
+	[FIFO_XY2SR] = FIFO_32(XY2SR, xy2sr, -1),
+	[FIFO_SR2OG] = FIFO_BLOCK(SR2OG, sr2og, HARDDOOM_STAT_SR_BLOCK),
+	[FIFO_TEX2OG] = FIFO_BLOCK_MASK(TEX2OG, tex2og, HARDDOOM_STAT_TEX_BLOCK),
+	[FIFO_FLAT2OG] = FIFO_BLOCK(FLAT2OG, flat2og, HARDDOOM_STAT_FLAT_BLOCK),
+	[FIFO_FUZZ2OG] = FIFO_MASK(FUZZ2OG, fuzz2og, HARDDOOM_STAT_FUZZ_BLOCK),
+	[FIFO_OG2SW] = FIFO_BLOCK_MASK(OG2SW, og2sw, HARDDOOM_STAT_SW_BLOCK),
+	[FIFO_OG2SW_C] = FIFO_32(OG2SW_C, og2sw_c, HARDDOOM_STAT_SW_CMD),
 };
 
 static uint32_t le32_read(uint8_t *ptr) {
 	return ptr[0] | ptr[1] << 8 | ptr[2] << 16 | ptr[3] << 24;
 }
 
+static int harddoom_fifo_rptr(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	return *state & (desc->size - 1);
+}
+
+static int harddoom_fifo_wptr(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	return *state >> 16 & (desc->size - 1);
+}
+
 /* Returns number of free slots in the FIFO.  */
-static int harddoom_fifo_free(uint32_t state, uint32_t size) {
-	int rptr = state & 0xffff;
-	int wptr = state >> 16 & 0xffff;
-	int used = (wptr - rptr) & (2 * size - 1);
+static int harddoom_fifo_free(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	int rptr = *state & 0xffff;
+	int wptr = *state >> 16 & 0xffff;
+	int used = (wptr - rptr) & (2 * desc->size - 1);
 	/* This considers overfull FIFO to have free slots.
 	 * It's part of the fun.  */
-	return (size - used) & (2 * size - 1);
+	return (desc->size - used) & (2 * desc->size - 1);
+}
+
+/* Bumps the FIFO read pointer, returns previous value.  */
+static int harddoom_fifo_read_manual(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	int rptr = *state & 0xffff;
+	int wptr = *state >> 16 & 0xffff;
+	int res = rptr & (desc->size - 1);
+	rptr++;
+	rptr &= (2 * desc->size - 1);
+	*state = wptr << 16 | rptr;
+	return res;
 }
 
 /* Reads from a FIFO.  */
-static uint32_t harddoom_fifo_read(uint32_t *data, uint32_t *state, uint32_t size) {
+static uint32_t harddoom_fifo32_read(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *data = (void *)((char *)d + desc->vm_off_data);
+	return data[harddoom_fifo_read_manual(d, which)];
+}
+
+/* Bumps the FIFO write pointer, returns previous value.  */
+static int harddoom_fifo_write_manual(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	if (desc->stats_idx != -1)
+		d->stats[desc->stats_idx]++;
 	int rptr = *state & 0xffff;
 	int wptr = *state >> 16 & 0xffff;
-	uint32_t res = data[rptr & (size - 1)];
-	rptr++;
-	rptr &= (2 * size - 1);
+	int res = wptr & (desc->size - 1);
+	wptr++;
+	wptr &= (2 * desc->size - 1);
 	*state = wptr << 16 | rptr;
 	return res;
 }
 
 /* Writes to a FIFO.  */
-static void harddoom_fifo_write(uint32_t *data, uint32_t *state, uint32_t size, uint32_t value) {
-	int rptr = *state & 0xffff;
-	int wptr = *state >> 16 & 0xffff;
-	data[wptr & (size - 1)] = value;
-	wptr++;
-	wptr &= (2 * size - 1);
-	*state = wptr << 16 | rptr;
-}
-
-static int harddoom_fifo_can_read(uint32_t state) {
-	int rptr = state & 0xffff;
-	int wptr = state >> 16 & 0xffff;
-	return rptr != wptr;
-}
-
-/* Recomputes status register and PCI interrupt line.  */
-static void harddoom_status_update(HardDoomState *d) {
-	d->status = 0;
-	/* DRAW busy iff DRAW_STATE.MODE is non-0.  */
-	if ((d->draw_state & HARDDOOM_DRAW_STATE_MODE_MASK) !=
-		HARDDOOM_DRAW_STATE_MODE_IDLE)
-		d->status |= HARDDOOM_STATUS_DRAW;
-	/* FIFO busy iff read != write.  */
-	if (harddoom_fifo_can_read(d->fifo_state))
-		d->status |= HARDDOOM_STATUS_FIFO;
-	/* FETCH_CMD busy iff read != write.  */
-	if (d->cmd_read_ptr != d->cmd_write_ptr)
-		d->status |= HARDDOOM_STATUS_FETCH_CMD;
-	/* determine and set PCI interrupt status */
-	pci_set_irq(PCI_DEVICE(d), !!(d->intr & d->intr_enable));
-}
-
-/* Schedules our worker timer.  Should be called whenever device has new
-   work to do (eg. after FIFO_SEND).  status_update has to be called first,
-   if necessary.  */
-static void harddoom_schedule(HardDoomState *d) {
-	/* Draw can draw.  */
-	bool draw_busy = (d->status & HARDDOOM_STATUS_DRAW) &&
-		(d->enable & HARDDOOM_ENABLE_DRAW);
-	/* FIFO can feed draw.  */
-	bool fifo_busy = (d->status & HARDDOOM_STATUS_FIFO) &&
-		(d->enable & HARDDOOM_ENABLE_FIFO) &&
-		!(d->status & HARDDOOM_STATUS_DRAW);
-	/* FETCH_CMD can feed FIFO.  */
-	bool fetch_cmd_busy = (d->status & HARDDOOM_STATUS_FETCH_CMD) &&
-		(d->enable & HARDDOOM_ENABLE_FETCH_CMD) && harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
-	/* no active blocks - return */
-	if (!draw_busy && !fifo_busy && !fetch_cmd_busy)
-		return;
-	timer_mod(d->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + (lrand48() % 1000) * 10);
-}
-
-/* Resets DRAW unit, making it idle and ready to accept a new command.  */
-static void harddoom_reset_draw(HardDoomState *d) {
-	/* The bare minimum.  */
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	harddoom_status_update(d);
-	/* This could wake up FIFO...  but if it does, someone's
-	 * doing something stupid.  */
-	harddoom_schedule(d);
-}
-
-/* Resets FIFO unit, making it empty.  */
-static void harddoom_reset_fifo(HardDoomState *d) {
-	/* Set both read and write pointers to 0.  */
-	d->fifo_state = 0;
-	harddoom_status_update(d);
-	/* This could wake up FETCH_CMD...  but if it does, someone's
-	 * doing something stupid.  */
-	harddoom_schedule(d);
-}
-
-/* Resets TLBs, forcing a reread of PT.  */
-static void harddoom_reset_tlb(HardDoomState *d) {
-	/* Kill TAG valid bits.  */
-	for (int i = 0; i < 3; i++)
-		d->tlb_tag[i] &= ~HARDDOOM_TLB_TAG_VALID;
-}
-
-/* Resets the cache.  */
-static void harddoom_reset_cache(HardDoomState *d) {
-	/* Kill valid bits, keep the others.  */
-	d->cache_state &= HARDDOOM_CACHE_STATE_TEXTURE_TAG_MASK | HARDDOOM_CACHE_STATE_FLAT_TAG_MASK;
-}
-
-/* Checks if command is valid (and not a JUMP).  */
-static bool harddoom_valid_cmd(uint32_t val) {
-	/* JUMPs are handled elsewhere.  If we see one here, it's bad.  */
-	if (HARDDOOM_CMD_EXTR_TYPE_HI(val) == HARDDOOM_CMD_TYPE_HI_JUMP)
-		return false;
-	switch (HARDDOOM_CMD_EXTR_TYPE(val)) {
-		case HARDDOOM_CMD_TYPE_SURF_DST_PT:
-		case HARDDOOM_CMD_TYPE_SURF_SRC_PT:
-		case HARDDOOM_CMD_TYPE_TEXTURE_PT:
-			return !(val & ~0xffffffff);
-		case HARDDOOM_CMD_TYPE_COLORMAP_ADDR:
-		case HARDDOOM_CMD_TYPE_TRANSLATION_ADDR:
-			return !(val & ~0xfcffffff);
-		case HARDDOOM_CMD_TYPE_FLAT_ADDR:
-			return !(val & ~0xfc0fffff);
-		case HARDDOOM_CMD_TYPE_SURF_DIMS:
-			return !(val & ~0xfc0fffff);
-		case HARDDOOM_CMD_TYPE_TEXTURE_DIMS:
-			return !(val & ~0xfffff3ff);
-		case HARDDOOM_CMD_TYPE_FILL_COLOR:
-			return !(val & ~0xfc0000ff);
-		case HARDDOOM_CMD_TYPE_XY_A:
-		case HARDDOOM_CMD_TYPE_XY_B:
-			return !(val & ~0xfc7ff7ff);
-		case HARDDOOM_CMD_TYPE_DRAW_PARAMS:
-			return !(val & ~0xfc000007);
-		case HARDDOOM_CMD_TYPE_USTART:
-		case HARDDOOM_CMD_TYPE_VSTART:
-		case HARDDOOM_CMD_TYPE_USTEP:
-		case HARDDOOM_CMD_TYPE_VSTEP:
-			return !(val & ~0xffffffff);
-		case HARDDOOM_CMD_TYPE_COPY_RECT:
-			return !(val & ~0xfcffffff);
-		case HARDDOOM_CMD_TYPE_FILL_RECT:
-			return !(val & ~0xfcffffff);
-		case HARDDOOM_CMD_TYPE_DRAW_LINE:
-			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
-			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
-			return !(val & ~0xfc3fffff);
-		case HARDDOOM_CMD_TYPE_DRAW_SPAN:
-			return !(val & ~0xfc000000);
-		case HARDDOOM_CMD_TYPE_FENCE:
-			return !(val & ~0xffffffff);
-		case HARDDOOM_CMD_TYPE_PING_SYNC:
-		case HARDDOOM_CMD_TYPE_PING_ASYNC:
-		case HARDDOOM_CMD_TYPE_INTERLOCK:
-			return !(val & ~0xfc000000);
-		default:
-			return false;
+static void harddoom_fifo32_write(HardDoomState *d, int which, uint32_t value) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *data = (void *)((char *)d + desc->vm_off_data);
+	data[harddoom_fifo_write_manual(d, which)] = value;
+	if (which == FIFO_MAIN) {
+		d->fe_state &= ~HARDDOOM_FE_STATE_WAIT_FIFO;
 	}
 }
 
-/* Makes given interrupt(s) pending.  */
-static void harddoom_trigger(HardDoomState *d, uint32_t intr) {
-	d->intr |= intr;
-	harddoom_status_update(d);
+static int harddoom_fifo_can_read(HardDoomState *d, int which) {
+	struct harddoom_fifo *desc = &harddoom_fifos[which];
+	uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+	int rptr = *state & 0xffff;
+	int wptr = *state >> 16 & 0xffff;
+	return rptr != wptr;
 }
 
 /* Handles FIFO_SEND - appends a command to FIFO, or triggers FE_ERROR
  * or FIFO_OVERFLOW.  */
 static void harddoom_fifo_send(HardDoomState *d, uint32_t val) {
-	int free = harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
-	if (!free) {
-		harddoom_trigger(d, HARDDOOM_INTR_FIFO_OVERFLOW);
-	} else if (!harddoom_valid_cmd(val)) {
-		harddoom_trigger(d, HARDDOOM_INTR_FE_ERROR);
+	int free = harddoom_fifo_free(d, FIFO_MAIN);
+	if (!free || !(d->enable & HARDDOOM_ENABLE_FIFO)) {
+		d->intr |= HARDDOOM_INTR_FIFO_OVERFLOW;
 	} else {
-		harddoom_fifo_write(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE, val);
-		/* DRAW has work to do now.  */
-		harddoom_status_update(d);
-		harddoom_schedule(d);
+		harddoom_fifo32_write(d, FIFO_MAIN, val);
 	}
 }
 
-/* Executes a COPY_RECT command -- prepares DRAW state.  The actual drawing
- * will happen later, asynchronously.  */
-static void harddoom_trigger_copy_rect(HardDoomState *d, uint32_t val) {
-	int w = HARDDOOM_CMD_EXTR_RECT_WIDTH(val);
-	int h = HARDDOOM_CMD_EXTR_RECT_HEIGHT(val);
-	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
-	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
-	int x_b = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[1]);
-	int y_b = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[1]);
-	int x_e = (x_a + w - 1) & HARDDOOM_COORD_MASK;
-	int y_e = (y_a + h - 1) & HARDDOOM_COORD_MASK;
-	if (!w || !h)
-		return;
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	d->draw_state |= HARDDOOM_DRAW_STATE_MODE_COPY;
-	d->draw_x_cur = d->draw_x_restart = x_a | x_b << 16;
-	d->draw_y_cur = y_a | y_b << 16;
-	d->draw_end = x_e | y_e << 16;
-	harddoom_status_update(d);
-	harddoom_schedule(d);
+/* Recomputes status register and PCI interrupt line.  */
+static void harddoom_status_update(HardDoomState *d) {
+	int i;
+	d->status = 0;
+	/* FETCH_CMD busy iff read != write.  */
+	if (d->cmd_read_ptr != d->cmd_write_ptr)
+		d->status |= HARDDOOM_STATUS_FETCH_CMD;
+	/* FE busy iff not waiting for FIFO.  */
+	if (!(d->fe_state & HARDDOOM_FE_STATE_WAIT_FIFO))
+		d->status |= HARDDOOM_STATUS_FE;
+	/* XY busy iff command pending in any of the three regs.  */
+	if (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_cmd))
+		d->status |= HARDDOOM_STATUS_XY;
+	if (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_dst_cmd))
+		d->status |= HARDDOOM_STATUS_XY;
+	if (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_src_cmd))
+		d->status |= HARDDOOM_STATUS_XY;
+	/* TEX busy iff command pending.  */
+	if (HARDDOOM_TEXCMD_EXTR_TYPE(d->tex_cmd))
+		d->status |= HARDDOOM_STATUS_TEX;
+	/* FLAT busy iff command pending.  */
+	if (HARDDOOM_FLCMD_EXTR_TYPE(d->flat_cmd))
+		d->status |= HARDDOOM_STATUS_FLAT;
+	/* FUZZ busy iff command pending.  */
+	if (HARDDOOM_FZCMD_EXTR_TYPE(d->fuzz_cmd))
+		d->status |= HARDDOOM_STATUS_FUZZ;
+	/* OG busy iff command pending.  */
+	if (HARDDOOM_OGCMD_EXTR_TYPE(d->og_cmd))
+		d->status |= HARDDOOM_STATUS_OG;
+	/* SW busy iff command pending.  */
+	if (HARDDOOM_SWCMD_EXTR_TYPE(d->sw_cmd))
+		d->status |= HARDDOOM_STATUS_SW;
+	/* FIFOs busy iff read != write.  */
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		if (harddoom_fifo_can_read(d, i))
+			d->status |= desc->status;
+	}
+	if (d->sw2xy_state)
+		d->status |= HARDDOOM_STATUS_SW2XY;
+	/* determine and set PCI interrupt status */
+	pci_set_irq(PCI_DEVICE(d), !!(d->intr & d->intr_enable));
 }
 
-/* Executes a FILL_RECT command.  */
-static void harddoom_trigger_fill_rect(HardDoomState *d, uint32_t val) {
-	int w = HARDDOOM_CMD_EXTR_RECT_WIDTH(val);
-	int h = HARDDOOM_CMD_EXTR_RECT_HEIGHT(val);
-	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
-	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
-	int x_e = (x_a + w - 1) & HARDDOOM_COORD_MASK;
-	int y_e = (y_a + h - 1) & HARDDOOM_COORD_MASK;
-	if (!w || !h)
-		return;
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	d->draw_state |= HARDDOOM_DRAW_STATE_MODE_FILL;
-	d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_cur |= x_a;
-	d->draw_x_restart &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_restart |= x_a;
-	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_y_cur |= y_a;
-	d->draw_end = x_e | y_e << 16;
-	harddoom_status_update(d);
-	harddoom_schedule(d);
+/* Resets TLBs, forcing a reread of PT.  */
+static void harddoom_reset_tlb(HardDoomState *d) {
+	/* Kill ENTRY valid bits.  */
+	for (int i = 0; i < 3; i++)
+		d->tlb_entry[i] &= ~HARDDOOM_TLB_ENTRY_VALID;
 }
 
-/* Executes a DRAW_LINE command.  */
-static void harddoom_trigger_draw_line(HardDoomState *d, uint32_t val) {
-	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
-	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
-	int x_e = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[1]);
-	int y_e = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[1]);
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	d->draw_state |= HARDDOOM_DRAW_STATE_MODE_LINE;
-	d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_cur |= x_a;
-	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_y_cur |= y_a;
-	d->draw_end = x_e | y_e << 16;
-	int ax = x_e - x_a;
-	if (ax < 0) {
-		ax = -ax;
-		d->draw_state |= HARDDOOM_DRAW_STATE_LINE_SX_NEGATIVE;
-	} else {
-		d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_SX_NEGATIVE;
+static void harddoom_reset(HardDoomState *d, uint32_t val) {
+	int i;
+	if (val & HARDDOOM_RESET_FE)
+		d->fe_state = 0;
+	if (val & HARDDOOM_RESET_XY) {
+		d->xy_cmd = 0;
+		d->xy_dst_cmd = 0;
+		d->xy_src_cmd = 0;
 	}
-	int ay = y_e - y_a;
-	if (ay < 0) {
-		ay = -ay;
-		d->draw_state |= HARDDOOM_DRAW_STATE_LINE_SY_NEGATIVE;
-	} else {
-		d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_SY_NEGATIVE;
+	if (val & HARDDOOM_RESET_TEX) {
+		d->tex_cmd = 0;
 	}
-	d->draw_line_size = ax | ay << 16;
-	int line_d;
-	if (ax > ay) {
-		d->draw_state |= HARDDOOM_DRAW_STATE_LINE_X_MAJOR;
-		line_d = 2 * ay - ax;
-	} else {
-		d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_X_MAJOR;
-		line_d = 2 * ax - ay;
+	if (val & HARDDOOM_RESET_FLAT) {
+		d->flat_cmd = 0;
 	}
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_D_MASK;
-	d->draw_state |= line_d << HARDDOOM_DRAW_STATE_LINE_D_SHIFT &
-		HARDDOOM_DRAW_STATE_LINE_D_MASK;
-	harddoom_status_update(d);
-	harddoom_schedule(d);
+	if (val & HARDDOOM_RESET_FUZZ) {
+		d->fuzz_cmd = 0;
+	}
+	if (val & HARDDOOM_RESET_OG) {
+		d->og_cmd = 0;
+		d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+	}
+	if (val & HARDDOOM_RESET_SW) {
+		d->sw_cmd = 0;
+	}
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		uint32_t *state = (void *)((char *)d + desc->vm_off_state);
+		if (val & desc->reset) {
+			*state = 0;
+		}
+	}
+	if (val & HARDDOOM_RESET_SW2XY)
+		d->sw2xy_state = 0;
+	if (val & HARDDOOM_RESET_STATS) {
+		int i;
+		for (i = 0; i < HARDDOOM_STATS_NUM; i++)
+			d->stats[i] = 0;
+	}
+	if (val & HARDDOOM_RESET_TLB) {
+		harddoom_reset_tlb(d);
+	}
+	if (val & HARDDOOM_RESET_FLAT_CACHE) {
+		d->flat_cache_state &= ~HARDDOOM_FLAT_CACHE_STATE_VALID;
+	}
+	if (val & HARDDOOM_RESET_TEX_CACHE) {
+		d->tex_cache_state &= ~HARDDOOM_TEX_CACHE_STATE_VALID;
+	}
 }
 
-/* Executes a DRAW_BACKGROUND command.  */
-static void harddoom_trigger_draw_background(HardDoomState *d, uint32_t val) {
-	int x_e = (HARDDOOM_CMD_EXTR_SURF_DIMS_WIDTH(d->state_surf_dims) - 1) & HARDDOOM_COORD_MASK;
-	int y_e = (HARDDOOM_CMD_EXTR_SURF_DIMS_HEIGHT(d->state_surf_dims) - 1) & HARDDOOM_COORD_MASK;
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	d->draw_state |= HARDDOOM_DRAW_STATE_MODE_BACKGROUND;
-	/* Start from 0.  */
-	d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_restart &= ~HARDDOOM_COORD_MASK;
-	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_end = x_e | y_e << 16;
-	harddoom_status_update(d);
-	harddoom_schedule(d);
-}
-
-/* Executes a DRAW_COLUMN command.  */
-static void harddoom_trigger_draw_column(HardDoomState *d, uint32_t val) {
-	uint32_t column_offset = HARDDOOM_CMD_EXTR_COLUMN_OFFSET(val);
-	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
-	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
-	int x_e = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[1]);
-	int y_e = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[1]);
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_FUZZ) {
-		d->draw_state |= HARDDOOM_DRAW_STATE_MODE_FUZZ;
-	} else {
-		d->draw_state |= HARDDOOM_DRAW_STATE_MODE_COLUMN;
-	}
-	d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_cur |= x_a;
-	d->draw_x_restart &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_restart |= x_a;
-	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_y_cur |= y_a;
-	d->draw_end = x_e | y_e << 16;
-	d->draw_texcoord_u = d->state_uvstart[0];
-	d->draw_column_offset = column_offset;
-	harddoom_status_update(d);
-	harddoom_schedule(d);
-}
-
-/* Executes a DRAW_SPAN command.  */
-static void harddoom_trigger_draw_span(HardDoomState *d, uint32_t val) {
-	int x_a = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[0]);
-	int y_a = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[0]);
-	int x_e = HARDDOOM_CMD_EXTR_XY_X(d->state_xy[1]);
-	int y_e = HARDDOOM_CMD_EXTR_XY_Y(d->state_xy[1]);
-	d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-	if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_FUZZ) {
-		d->draw_state |= HARDDOOM_DRAW_STATE_MODE_FUZZ;
-	} else {
-		d->draw_state |= HARDDOOM_DRAW_STATE_MODE_SPAN;
-	}
-	d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_cur |= x_a;
-	d->draw_x_restart &= ~HARDDOOM_COORD_MASK;
-	d->draw_x_restart |= x_a;
-	d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-	d->draw_y_cur |= y_a;
-	d->draw_end = x_e | y_e << 16;
-	d->draw_texcoord_u = d->state_uvstart[0];
-	d->draw_texcoord_v = d->state_uvstart[1];
-	harddoom_status_update(d);
-	harddoom_schedule(d);
+/* Sets the given PT and flushes corresponding TLB.  */
+static void harddoom_set_pt(HardDoomState *d, int which, uint32_t val) {
+	d->tlb_pt[which] = val;
+	d->tlb_entry[which] &= ~HARDDOOM_TLB_ENTRY_VALID;
+	d->stats[harddoom_tlbs[which].rebind_stats_idx]++;
 }
 
 /* Converts virtual offset to a physical address -- handles PT lookup.
- * If something goes wrong, disables DRAW_ENABLE, fires an interrupt,
- * and returns junk.  */
-
-static uint32_t harddoom_translate_addr(HardDoomState *d, int which, uint32_t offset) {
-	uint32_t vidx = offset >> HARDDOOM_PAGE_SHIFT & HARDDOOM_TLB_TAG_IDX_MASK;
-	uint32_t tag = vidx | HARDDOOM_TLB_TAG_VALID;
-	uint32_t pte_addr = (d->state_pt[which] << 6) + (vidx << 2);
-	uint32_t cur_tag = d->tlb_tag[which];
-	uint32_t pte = d->tlb_pte[which];
-	if (cur_tag != tag) {
+ * If something goes wrong, disables the enable bit and fires an interrupt.
+ * Returns true if succeeded.  */
+static bool harddoom_translate_addr(HardDoomState *d, int which, uint32_t offset, uint32_t *res) {
+	uint32_t vidx = offset >> HARDDOOM_PAGE_SHIFT & HARDDOOM_TLB_IDX_MASK;
+	uint32_t entry = d->tlb_entry[which];
+	uint32_t cur_vidx = entry >> HARDDOOM_TLB_ENTRY_IDX_SHIFT & HARDDOOM_TLB_IDX_MASK;
+	uint32_t pte_addr = d->tlb_pt[which] + (vidx << 2);
+	d->tlb_vaddr[which] = offset;
+	if (vidx != cur_vidx || !(entry & HARDDOOM_TLB_ENTRY_VALID)) {
 		/* Mismatched or invalid tag -- fetch a new one.  */
 		uint8_t pteb[4];
 		pci_dma_read(&d->dev, pte_addr, &pteb, sizeof pteb);
-		pte = le32_read(pteb) & 0xfffff001;
-		d->tlb_tag[which] = tag;
-		d->tlb_pte[which] = pte;
+		d->tlb_entry[which] = entry = (le32_read(pteb) & 0xfffff001) | vidx << HARDDOOM_TLB_ENTRY_IDX_SHIFT | HARDDOOM_TLB_ENTRY_VALID;
+		d->stats[harddoom_tlbs[which].miss_stats_idx]++;
+	} else {
+		d->stats[harddoom_tlbs[which].hit_stats_idx]++;
 	}
-	if (!(pte & HARDDOOM_PTE_VALID)) {
-		d->enable &= ~HARDDOOM_ENABLE_DRAW;
-		harddoom_trigger(d, HARDDOOM_INTR_PAGE_FAULT_SURF_DST << which);
+	if (!(entry & HARDDOOM_PTE_VALID)) {
+		d->enable &= ~harddoom_tlbs[which].enable;
+		d->intr |= HARDDOOM_INTR_PAGE_FAULT_SURF_DST << which;
+		return false;
 	}
-	return (pte & HARDDOOM_PTE_PHYS_MASK) | (offset & (HARDDOOM_PAGE_SIZE - 1));
+	*res = (entry & HARDDOOM_PTE_PHYS_MASK) | (offset & (HARDDOOM_PAGE_SIZE - 1));
+	return true;
 }
 
-/* Converts x, y position to virtual address.  If something goes wrong,
- * triggers SURF_OVERFLOW.  */
-static uint32_t harddoom_translate_surf_xy(HardDoomState *d, uint16_t x, uint16_t y) {
-	int w = HARDDOOM_CMD_EXTR_SURF_DIMS_WIDTH(d->state_surf_dims);
-	int h = HARDDOOM_CMD_EXTR_SURF_DIMS_HEIGHT(d->state_surf_dims);
+/* Converts x block, y position to physical address.  If something goes wrong,
+ * triggers an interrupt and disables the enable bit.  Returns true if succeeded.  */
+static bool harddoom_translate_surf_xy(HardDoomState *d, int which, uint16_t x, uint16_t y, uint32_t *res) {
+	int w = HARDDOOM_CMD_EXTR_SURF_DIMS_WIDTH(d->xy_surf_dims);
+	int h = HARDDOOM_CMD_EXTR_SURF_DIMS_HEIGHT(d->xy_surf_dims);
+	uint32_t offset = y * w + (x << 6);
+	offset &= HARDDOOM_TLB_VADDR_MASK;
 	if (x >= w || y >= h) {
 		/* Fire an interrupt and disable ourselves.  */
-		d->enable &= ~HARDDOOM_ENABLE_DRAW;
-		harddoom_trigger(d, HARDDOOM_INTR_SURF_OVERFLOW);
+		d->enable &= ~HARDDOOM_ENABLE_XY;
+		d->intr |= HARDDOOM_INTR_SURF_DST_OVERFLOW << which;
+		return false;
 	}
-	return y * w + x;
-}
-
-/* Ensures the texture cache is filled with the line containing the given offset.
- * May cause a page fault and disable DRAW.  */
-static void harddoom_fill_cache_texture(HardDoomState *d, uint32_t offset) {
-	offset &= ~(HARDDOOM_CACHE_SIZE - 1);
-	int tag = offset >> HARDDOOM_CACHE_SHIFT;
-	if ((d->cache_state & HARDDOOM_CACHE_STATE_TEXTURE_VALID) &&
-		((d->cache_state & HARDDOOM_CACHE_STATE_TEXTURE_TAG_MASK) >>
-		 HARDDOOM_CACHE_STATE_TEXTURE_TAG_SHIFT) == tag)
-		return;
-	if (offset < HARDDOOM_CMD_EXTR_TEXTURE_SIZE(d->state_texture_dims)) {
-		/* If it's out of range, just skip the fetch and use whatever
-		 * crap we already have in the cache.  */
-		uint32_t phys = harddoom_translate_addr(d, TLB_TEXTURE, offset);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		pci_dma_read(&d->dev, phys, d->cache_data_texture, HARDDOOM_CACHE_SIZE);
-	}
-	d->cache_state &= ~HARDDOOM_CACHE_STATE_TEXTURE_TAG_MASK;
-	d->cache_state |= tag << HARDDOOM_CACHE_STATE_TEXTURE_TAG_SHIFT;
-	d->cache_state |= HARDDOOM_CACHE_STATE_TEXTURE_VALID;
-}
-
-/* Ensures the flat cache is filled with the line containing the given offset.  */
-static void harddoom_fill_cache_flat(HardDoomState *d, uint32_t offset) {
-	offset &= ~(HARDDOOM_CACHE_SIZE - 1);
-	int tag = offset >> HARDDOOM_CACHE_SHIFT;
-	if ((d->cache_state & HARDDOOM_CACHE_STATE_FLAT_VALID) &&
-		((d->cache_state & HARDDOOM_CACHE_STATE_FLAT_TAG_MASK) >>
-		 HARDDOOM_CACHE_STATE_FLAT_TAG_SHIFT) == tag)
-		return;
-	uint32_t phys = d->state_flat_addr << 12 | offset;
-	pci_dma_read(&d->dev, phys, d->cache_data_flat, HARDDOOM_CACHE_SIZE);
-	d->cache_state &= ~HARDDOOM_CACHE_STATE_FLAT_TAG_MASK;
-	d->cache_state |= tag << HARDDOOM_CACHE_STATE_FLAT_TAG_SHIFT;
-	d->cache_state |= HARDDOOM_CACHE_STATE_FLAT_VALID;
-}
-
-/* Ensures the colormap cache is filled.  */
-static void harddoom_fill_cache_colormap(HardDoomState *d) {
-	if (d->cache_state & HARDDOOM_CACHE_STATE_COLORMAP_VALID)
-		return;
-	uint32_t phys = d->state_colormap_addr[0] << 8;
-	pci_dma_read(&d->dev, phys, d->cache_data_colormap, HARDDOOM_CACHE_SIZE);
-	d->cache_state |= HARDDOOM_CACHE_STATE_COLORMAP_VALID;
-}
-
-/* Ensures the translation cache is filled.  */
-static void harddoom_fill_cache_translation(HardDoomState *d) {
-	if (d->cache_state & HARDDOOM_CACHE_STATE_TRANSLATION_VALID)
-		return;
-	uint32_t phys = d->state_colormap_addr[1] << 8;
-	pci_dma_read(&d->dev, phys, d->cache_data_translation, HARDDOOM_CACHE_SIZE);
-	d->cache_state |= HARDDOOM_CACHE_STATE_TRANSLATION_VALID;
-}
-
-/* Executes a command.  */
-static void harddoom_do_command(HardDoomState *d, int cmd, uint32_t val) {
-	val &= ~0xfc000000;
-	switch (cmd) {
-	case HARDDOOM_CMD_TYPE_SURF_DST_PT:
-		d->state_pt[TLB_SURF_DST] = val;
-		d->tlb_tag[TLB_SURF_DST] &= ~HARDDOOM_TLB_TAG_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_SURF_SRC_PT:
-		d->state_pt[TLB_SURF_SRC] = val;
-		d->tlb_tag[TLB_SURF_SRC] &= ~HARDDOOM_TLB_TAG_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_TEXTURE_PT:
-		d->state_pt[TLB_TEXTURE] = val;
-		d->tlb_tag[TLB_TEXTURE] &= ~HARDDOOM_TLB_TAG_VALID;
-		d->cache_state &= ~HARDDOOM_CACHE_STATE_TEXTURE_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_COLORMAP_ADDR:
-		d->state_colormap_addr[0] = val & 0xffffff;
-		d->cache_state &= ~HARDDOOM_CACHE_STATE_COLORMAP_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_TRANSLATION_ADDR:
-		d->state_colormap_addr[1] = val & 0xffffff;
-		d->cache_state &= ~HARDDOOM_CACHE_STATE_TRANSLATION_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_FLAT_ADDR:
-		d->state_flat_addr = val & 0xfffff;
-		d->cache_state &= ~HARDDOOM_CACHE_STATE_FLAT_VALID;
-		break;
-	case HARDDOOM_CMD_TYPE_SURF_DIMS:
-		d->state_surf_dims = val & 0xffffff;
-		break;
-	case HARDDOOM_CMD_TYPE_TEXTURE_DIMS:
-		d->state_texture_dims = val & 0x3fff3ff;
-		break;
-	case HARDDOOM_CMD_TYPE_FILL_COLOR:
-		d->state_fill_color = val & 0xff;
-		break;
-	case HARDDOOM_CMD_TYPE_XY_A:
-		d->state_xy[0] = val & 0x7ff7ff;
-		break;
-	case HARDDOOM_CMD_TYPE_XY_B:
-		d->state_xy[1] = val & 0x7ff7ff;
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_PARAMS:
-		d->state_draw_params = val & 7;
-		break;
-	case HARDDOOM_CMD_TYPE_USTART:
-		d->state_uvstart[0] = val;
-		break;
-	case HARDDOOM_CMD_TYPE_VSTART:
-		d->state_uvstart[1] = val;
-		break;
-	case HARDDOOM_CMD_TYPE_USTEP:
-		d->state_uvstep[0] = val;
-		break;
-	case HARDDOOM_CMD_TYPE_VSTEP:
-		d->state_uvstep[1] = val;
-		break;
-	case HARDDOOM_CMD_TYPE_COPY_RECT:
-		harddoom_trigger_copy_rect(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_FILL_RECT:
-		harddoom_trigger_fill_rect(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_LINE:
-		harddoom_trigger_draw_line(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_BACKGROUND:
-		harddoom_trigger_draw_background(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_COLUMN:
-		harddoom_trigger_draw_column(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_DRAW_SPAN:
-		harddoom_trigger_draw_span(d, val);
-		break;
-	case HARDDOOM_CMD_TYPE_FENCE:
-		d->fence_last = val;
-		if (d->fence_wait == val)
-			harddoom_trigger(d, HARDDOOM_INTR_FENCE);
-		break;
-	case HARDDOOM_CMD_TYPE_PING_SYNC:
-		harddoom_trigger(d, HARDDOOM_INTR_PONG_SYNC);
-		break;
-	case HARDDOOM_CMD_TYPE_PING_ASYNC:
-		harddoom_trigger(d, HARDDOOM_INTR_PONG_ASYNC);
-		break;
-	case HARDDOOM_CMD_TYPE_INTERLOCK:
-		break;
-	default:
-		fprintf(stderr, "harddoom error: invalid command %d executed [param %08x]\n", cmd, val);
-	}
-}
-
-/* Draws a few pixels of a line.  */
-static void harddoom_draw_work_line(HardDoomState *d) {
-	int x = d->draw_x_cur & HARDDOOM_COORD_MASK;
-	int y = d->draw_y_cur & HARDDOOM_COORD_MASK;
-	int x_e = d->draw_end & HARDDOOM_COORD_MASK;
-	int y_e = d->draw_end >> 16 & HARDDOOM_COORD_MASK;
-	int line_d = (d->draw_state & HARDDOOM_DRAW_STATE_LINE_D_MASK) >> HARDDOOM_DRAW_STATE_LINE_D_SHIFT;
-	if (line_d & 0x1000)
-		line_d -= 0x2000;
-	int ax = d->draw_line_size & HARDDOOM_COORD_MASK;
-	int ay = d->draw_line_size >> 16 & HARDDOOM_COORD_MASK;
-	int sx = 1;
-	if (d->draw_state & HARDDOOM_DRAW_STATE_LINE_SX_NEGATIVE)
-		sx = -1;
-	int sy = 1;
-	if (d->draw_state & HARDDOOM_DRAW_STATE_LINE_SY_NEGATIVE)
-		sy = -1;
-	/* Tweakable parameter here.  */
-	int steps = 64;
-	while (steps--) {
-		/* Find and draw the actual pixel.  */
-		uint32_t virt = harddoom_translate_surf_xy(d, x, y);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint32_t phys = harddoom_translate_addr(d, TLB_SURF_DST, virt);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint8_t color = d->state_fill_color;
-		pci_dma_write(&d->dev, phys, &color, 1);
-		if (x == x_e && y == y_e) {
-			/* We're done here.  */
-			d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-			harddoom_status_update(d);
-			return;
-		}
-		/* Now, the Bresenham algorithm.  */
-		if (d->draw_state & HARDDOOM_DRAW_STATE_LINE_X_MAJOR) {
-			if (line_d >= 0) {
-				y += sy;
-				line_d -= ax * 2;
-			}
-			x += sx;
-			line_d += ay * 2;
-		} else {
-			if (line_d >= 0) {
-				x += sx;
-				line_d -= ay * 2;
-			}
-			y += sy;
-			line_d += ax * 2;
-		}
-		/* Write the new coordinates back.  */
-		d->draw_x_cur &= ~HARDDOOM_COORD_MASK;
-		d->draw_x_cur |= x;
-		d->draw_y_cur &= ~HARDDOOM_COORD_MASK;
-		d->draw_y_cur |= y;
-		d->draw_state &= ~HARDDOOM_DRAW_STATE_LINE_D_MASK;
-		d->draw_state |= line_d << HARDDOOM_DRAW_STATE_LINE_D_SHIFT & HARDDOOM_DRAW_STATE_LINE_D_MASK;
-	}
-}
-
-/* Does a single "atom" of work -- up to 64 pixels in a single 64-byte aligned
- * block.  */
-static void harddoom_draw_work_atom(HardDoomState *d) {
-	int mode = d->draw_state & HARDDOOM_DRAW_STATE_MODE_MASK;
-	assert(mode != HARDDOOM_DRAW_STATE_MODE_IDLE);
-	if (mode == HARDDOOM_DRAW_STATE_MODE_LINE) {
-		/* Lines are special.  */
-		harddoom_draw_work_line(d);
-		return;
-	}
-	int x = d->draw_x_cur & HARDDOOM_COORD_MASK;
-	int y = d->draw_y_cur & HARDDOOM_COORD_MASK;
-	int x_e = d->draw_end & HARDDOOM_COORD_MASK;
-	int y_e = d->draw_end >> 16 & HARDDOOM_COORD_MASK;
-	int x_s = d->draw_x_cur >> 16 & HARDDOOM_COORD_MASK;
-	int y_s = d->draw_y_cur >> 16 & HARDDOOM_COORD_MASK;
-	uint32_t virt = harddoom_translate_surf_xy(d, x, y);
-	if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-		return;
-	uint32_t phys = harddoom_translate_addr(d, TLB_SURF_DST, virt);
-	if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-		return;
-	uint8_t buf[64] = { 0 };
-	int count = x_e - x + 1;
-	if (count <= 0)
-		count = 64;
-	int align_count = (x | 0x3f) + 1 - x;
-	if (align_count < count)
-		count = align_count;
-	assert(count > 0 && count <= 64);
-	if (mode == HARDDOOM_DRAW_STATE_MODE_COPY) {
-		align_count = (x_s | 0x3f) + 1 - x_s;
-		if (align_count < count)
-			count = align_count;
-		uint32_t src_virt = harddoom_translate_surf_xy(d, x_s, y_s);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint32_t src_phys = harddoom_translate_addr(d, TLB_SURF_SRC, src_virt);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		pci_dma_read(&d->dev, src_phys, buf, count);
-	} else if (mode == HARDDOOM_DRAW_STATE_MODE_FILL) {
-		memset(buf, d->state_fill_color, sizeof buf);
-	} else if (mode == HARDDOOM_DRAW_STATE_MODE_BACKGROUND) {
-		harddoom_fill_cache_flat(d, (y & 0x3f) << 6);
-		int start = (x & 0x3f) | (y & 3) << 6;
-		memcpy(buf, d->cache_data_flat + start, count);
-	} else if (mode == HARDDOOM_DRAW_STATE_MODE_COLUMN) {
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_TRANSLATE)
-			harddoom_fill_cache_translation(d);
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
-			harddoom_fill_cache_colormap(d);
-		int ty = d->draw_texcoord_u >> 16;
-		int th = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->state_texture_dims);
-		if (th)
-			ty %= th;
-		int off = ty + d->draw_column_offset;
-		off &= 0x3fffff;
-		harddoom_fill_cache_texture(d, off);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint8_t color = d->cache_data_texture[off & 0xff];
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_TRANSLATE)
-			color = d->cache_data_translation[color];
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
-			color = d->cache_data_colormap[color];
-		memset(buf, color, count);
-		d->draw_texcoord_u += d->state_uvstep[0];
-		d->draw_texcoord_u &= 0x3ffffff;
-	} else if (mode == HARDDOOM_DRAW_STATE_MODE_SPAN) {
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_TRANSLATE)
-			harddoom_fill_cache_translation(d);
-		if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
-			harddoom_fill_cache_colormap(d);
-		for (int i = 0; i < count; i++) {
-			int tx = d->draw_texcoord_u >> 16 & 0x3f;
-			int ty = d->draw_texcoord_v >> 16 & 0x3f;
-			int off = ty << 6 | tx;
-			harddoom_fill_cache_flat(d, off);
-			uint8_t color = d->cache_data_flat[off & 0xff];
-			if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_TRANSLATE)
-				color = d->cache_data_translation[color];
-			if (d->state_draw_params & HARDDOOM_DRAW_PARAMS_COLORMAP)
-				color = d->cache_data_colormap[color];
-			buf[i] = color;
-			d->draw_texcoord_u += d->state_uvstep[0];
-			d->draw_texcoord_v += d->state_uvstep[1];
-		}
-		d->draw_texcoord_u &= 0x3fffff;
-		d->draw_texcoord_v &= 0x3fffff;
-	} else if (mode == HARDDOOM_DRAW_STATE_MODE_FUZZ) {
-		harddoom_fill_cache_colormap(d);
-		uint8_t bufp[64], bufn[64];
-		int py = y - 1;
-		if (py < 0)
-			py = 0;
-		int ny = y + 1;
-		if (ny == HARDDOOM_CMD_EXTR_SURF_DIMS_HEIGHT(d->state_surf_dims))
-			ny = y;
-		uint32_t p_virt = harddoom_translate_surf_xy(d, x, py);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint32_t p_phys = harddoom_translate_addr(d, TLB_SURF_DST, p_virt);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint32_t n_virt = harddoom_translate_surf_xy(d, x, ny);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		uint32_t n_phys = harddoom_translate_addr(d, TLB_SURF_DST, n_virt);
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		pci_dma_read(&d->dev, p_phys, bufp, count);
-		pci_dma_read(&d->dev, n_phys, bufn, count);
-		int fuzzpos = (d->draw_state & HARDDOOM_DRAW_STATE_FUZZPOS_MASK) >> HARDDOOM_DRAW_STATE_FUZZPOS_SHIFT;
-		for (int i = 0; i < count; i++) {
-			uint8_t color;
-			if (0x121e650de224aull >> fuzzpos & 1)
-				color = bufp[i];
-			else
-				color = bufn[i];
-			buf[i] = d->cache_data_colormap[color];
-			fuzzpos++;
-			fuzzpos &= 0x3f;
-			if (fuzzpos >= 50)
-				fuzzpos = 0;
-		}
-		d->draw_state &= ~HARDDOOM_DRAW_STATE_FUZZPOS_MASK;
-		d->draw_state |= fuzzpos << HARDDOOM_DRAW_STATE_FUZZPOS_SHIFT;
-	}
-	pci_dma_write(&d->dev, phys, buf, count);
-	x += count;
-	x_s += count;
-	int x_done = x - 1 == x_e;
-	x &= HARDDOOM_COORD_MASK;
-	x_s &= HARDDOOM_COORD_MASK;
-	d->draw_x_cur = x_s << 16 | x;
-	if (x_done) {
-		d->draw_x_cur = d->draw_x_restart;
-		int y_done = y == y_e;
-		y++;
-		y_s++;
-		y &= HARDDOOM_COORD_MASK;
-		y_s &= HARDDOOM_COORD_MASK;
-		d->draw_y_cur = y_s << 16 | y;
-		if (y_done) {
-			d->draw_state &= ~HARDDOOM_DRAW_STATE_MODE_MASK;
-		}
-	}
-}
-
-/* Main loop of the DRAW unit.  Does a random amount of work.  */
-static void harddoom_tick_draw(HardDoomState *d) {
-	/* Make the device as evil as easily possible by randomizing everything. */
-	/* First, determine how many units of work we do this time. */
-	int work_cnt = lrand48() & 0x3ffff;
-	while (work_cnt--) {
-		/* We may self-disable while working if we hit an error.  */
-		if (!(d->enable & HARDDOOM_ENABLE_DRAW))
-			return;
-		if (d->status & HARDDOOM_STATUS_DRAW) {
-			/* First, draw if there's drawing to do.  */
-			harddoom_draw_work_atom(d);
-		} else if (d->status & HARDDOOM_STATUS_FIFO) {
-			if (!(d->enable & HARDDOOM_ENABLE_FIFO))
-				return;
-			/* No drawing in progress, execute a command if there is one.  */
-			uint32_t cmd = harddoom_fifo_read(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE);
-			harddoom_do_command(d, HARDDOOM_CMD_EXTR_TYPE(cmd), cmd);
-		} else {
-			/* Nothing to do.  */
-			return;
-		}
-		harddoom_status_update(d);
-	}
-}
-
-/* Main loop of the FETCH_CMD unit.  Does a random amount of work.  */
-static void harddoom_tick_fetch_cmd(HardDoomState *d) {
-	if (!(d->enable & HARDDOOM_ENABLE_FETCH_CMD))
-		return;
-	/* First, determine how many commands we process this time. */
-	int cmd_cnt = lrand48() % 100;
-	while (cmd_cnt--) {
-		/* First, check if we're still allowed to work. */
-		if (!(d->status & HARDDOOM_STATUS_FETCH_CMD))
-			return;
-		/* Now, check if there's some place to put commands.  */
-		if (!harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE))
-			return;
-		/* There are commands to read, and there's somewhere to put them. Do it.  */
-		uint8_t cmdb[4];
-		pci_dma_read(&d->dev, d->cmd_read_ptr, &cmdb, sizeof cmdb);
-		uint32_t cmd = le32_read(cmdb);
-		d->cmd_read_ptr += sizeof cmdb;
-		if (HARDDOOM_CMD_EXTR_TYPE_HI(cmd) == HARDDOOM_CMD_TYPE_HI_JUMP) {
-			d->cmd_read_ptr = HARDDOOM_CMD_EXTR_JUMP_ADDR(cmd);
-		} else {
-			/* This could cause an INVALID_CMD.  We don't care.  */
-			harddoom_fifo_send(d, cmd);
-		}
-		harddoom_status_update(d);
-	}
-}
-
-/* Main loop of the device.  Does a random amount of work.  */
-static void harddoom_tick(void *opaque) {
-	HardDoomState *d = opaque;
-	harddoom_tick_draw(d);
-	harddoom_tick_fetch_cmd(d);
-	/* Schedule the next appointment. */
-	harddoom_schedule(d);
+	return harddoom_translate_addr(d, which, y * w + (x << 6), res);
 }
 
 /* MMIO write handlers.  */
 static void harddoom_mmio_writeb(void *opaque, hwaddr addr, uint32_t val)
 {
-	int i;
+	int i, idx;
 	HardDoomState *d = opaque;
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_TEXTURE(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		d->cache_data_texture[i] = val;
-		return;
+	qemu_mutex_lock(&d->mutex);
+	bool found = false;
+	for (i = 0; i < ARRAY_SIZE(harddoom_registers); i++) {
+		struct harddoom_register *desc = &harddoom_registers[i];
+		if (addr >= desc->bar_off && addr < desc->bar_off + desc->num && desc->type == REG_TYPE_SIMPLE_8) {
+			uint8_t *reg = (void *)((char *)opaque + desc->vm_off);
+			idx = addr - desc->bar_off;
+			reg[idx] = val & desc->mask;
+			if (val & ~desc->mask) {
+				fprintf(stderr, "harddoom error: invalid %s value %08x (valid mask is %08x)\n", desc->name, val, desc->mask);
+			}
+			found = true;
+		}
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_FLAT(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		d->cache_data_flat[i] = val;
-		return;
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		if ((desc->type == FIFO_TYPE_BLOCK || desc->type == FIFO_TYPE_BLOCK_MASK) && (addr & ~0x3f) == desc->bar_off_window) {
+			idx = addr & 0x3f;
+			uint8_t *data = (void *)((char *)d + desc->vm_off_data);
+			data[harddoom_fifo_wptr(d, i) * HARDDOOM_BLOCK_SIZE + idx] = val;
+			found = true;
+			break;
+		}
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_COLORMAP(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		d->cache_data_colormap[i] = val;
-		return;
+	if (!found) {
+		fprintf(stderr, "harddoom error: byte-sized write at %03x, value %02x\n", (int)addr, val);
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_TRANSLATION(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		d->cache_data_translation[i] = val;
-		return;
-	}
-	fprintf(stderr, "harddoom error: byte-sized write at %03x, value %02x\n", (int)addr, val);
+	qemu_mutex_unlock(&d->mutex);
 }
 
 static void harddoom_mmio_writew(void *opaque, hwaddr addr, uint32_t val)
@@ -947,163 +645,118 @@ static void harddoom_mmio_writew(void *opaque, hwaddr addr, uint32_t val)
 static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 {
 	HardDoomState *d = opaque;
-	switch (addr) {
-	/* Documented registers.  */
-	case HARDDOOM_ENABLE:
-		d->enable = val & (HARDDOOM_ENABLE_DRAW | HARDDOOM_ENABLE_FIFO | HARDDOOM_ENABLE_FETCH_CMD);
-		if (val & ~(HARDDOOM_ENABLE_DRAW | HARDDOOM_ENABLE_FIFO | HARDDOOM_ENABLE_FETCH_CMD))
-			fprintf(stderr, "harddoom error: invalid ENABLE value %08x\n", val);
-		harddoom_schedule(d);
-		return;
-	case HARDDOOM_RESET:
-		if (val & HARDDOOM_RESET_DRAW)
-			harddoom_reset_draw(d);
-		if (val & HARDDOOM_RESET_FIFO)
-			harddoom_reset_fifo(d);
-		if (val & HARDDOOM_RESET_TLB)
-			harddoom_reset_tlb(d);
-		if (val & HARDDOOM_RESET_CACHE)
-			harddoom_reset_cache(d);
-		if (val & ~(HARDDOOM_RESET_DRAW | HARDDOOM_RESET_FIFO | HARDDOOM_RESET_TLB | HARDDOOM_RESET_CACHE))
+	qemu_mutex_lock(&d->mutex);
+	int i, idx;
+	bool found = false;
+	for (i = 0; i < ARRAY_SIZE(harddoom_registers); i++) {
+		struct harddoom_register *desc = &harddoom_registers[i];
+		if (addr >= desc->bar_off && addr < desc->bar_off + desc->num * 4 && !(addr & 3) && desc->type == REG_TYPE_SIMPLE_32) {
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off);
+			idx = (addr - desc->bar_off) >> 2;
+			reg[idx] = val & desc->mask;
+			if (val & ~desc->mask) {
+				fprintf(stderr, "harddoom error: invalid %s value %08x (valid mask is %08x)\n", desc->name, val, desc->mask);
+			}
+			found = true;
+		}
+		if (addr == desc->bar_off && desc->type == REG_TYPE_WINDOW_32) {
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off);
+			uint32_t *idx = (void *)((char *)opaque + desc->vm_off_idx);
+			reg[*idx] = val & desc->mask;
+			(*idx)++;
+			(*idx) &= desc->num - 1;
+			if (val & ~desc->mask) {
+				fprintf(stderr, "harddoom error: invalid %s value %08x (valid mask is %08x)\n", desc->name, val, desc->mask);
+			}
+			found = true;
+		}
+		if (addr == desc->bar_off && desc->type == REG_TYPE_MASK) {
+			uint64_t *reg = (void *)((char *)opaque + desc->vm_off);
+			*reg &= ~0xffffffffull;
+			*reg |= val;
+			found = true;
+		}
+		if (addr == desc->bar_off + 4 && desc->type == REG_TYPE_MASK) {
+			uint64_t *reg = (void *)((char *)opaque + desc->vm_off);
+			*reg &= 0xffffffffull;
+			*reg |= (uint64_t)val << 32;
+			found = true;
+		}
+	}
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		if (addr == desc->bar_off_state) {
+			uint32_t mask = (2 * desc->size - 1) * 0x10001;
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off_state);
+			*reg = val & mask;
+			if (val & ~mask) {
+				fprintf(stderr, "harddoom error: invalid %s_STATE value %08x (valid mask is %08x)\n", desc->name, val, mask);
+			}
+			found = true;
+			break;
+		}
+		if (desc->type == FIFO_TYPE_32 && addr == desc->bar_off_window) {
+			harddoom_fifo32_write(d, i, val);
+			found = true;
+			break;
+		}
+		// XXX mask access
+	}
+	if (addr == HARDDOOM_RESET) {
+		harddoom_reset(d, val);
+		if (val & ~HARDDOOM_RESET_ALL)
 			fprintf(stderr, "harddoom error: invalid RESET value %08x\n", val);
-		return;
-	case HARDDOOM_INTR:
+		found = true;
+	}
+	if (addr == HARDDOOM_INTR) {
 		d->intr &= ~val;
 		if (val & ~HARDDOOM_INTR_MASK)
 			fprintf(stderr, "harddoom error: invalid INTR value %08x\n", val);
-		harddoom_status_update(d);
-		return;
-	case HARDDOOM_INTR_ENABLE:
-		d->intr_enable = val & HARDDOOM_INTR_MASK;
-		if (val & ~HARDDOOM_INTR_MASK)
-			fprintf(stderr, "harddoom error: invalid INTR_ENABLE value %08x\n", val);
-		harddoom_status_update(d);
-		return;
-	case HARDDOOM_FENCE_LAST:
-		d->fence_last = val;
-		if (val & ~HARDDOOM_FENCE_MASK)
-			fprintf(stderr, "harddoom error: invalid FENCE_LAST value %08x\n", val);
-		return;
-	case HARDDOOM_FENCE_WAIT:
-		d->fence_wait = val;
-		if (val & ~HARDDOOM_FENCE_MASK)
-			fprintf(stderr, "harddoom error: invalid FENCE_WAIT value %08x\n", val);
-		return;
-	case HARDDOOM_CMD_READ_PTR:
-		if (val & 3) {
-			fprintf(stderr, "harddoom error: CMD_READ_PTR not aligned\n");
-			val &= ~3;
-		}
-		/* If FETCH_CMD is working, this is a bad idea.  */
-		if ((d->enable & HARDDOOM_ENABLE_FETCH_CMD))
-			fprintf(stderr, "harddoom warning: CMD_READ_PTR written while command fetch enabled\n");
-		d->cmd_read_ptr = val;
-		harddoom_status_update(d);
-		harddoom_schedule(d);
-		return;
-	case HARDDOOM_CMD_WRITE_PTR:
-		if (val & 3) {
-			fprintf(stderr, "harddoom error: CMD_WRITE_PTR not aligned\n");
-			val &= ~3;
-		}
-		d->cmd_write_ptr = val;
-		harddoom_status_update(d);
-		harddoom_schedule(d);
-		return;
-	case HARDDOOM_FIFO_SEND:
+		found = true;
+	}
+	if (addr == HARDDOOM_FIFO_SEND) {
 		harddoom_fifo_send(d, val);
-		return;
-	/* Undocumented registers -- direct access to the FIFO.  */
-	case HARDDOOM_FIFO_STATE:
-		d->fifo_state = val & 0x03ff03ff;
-		return;
-	case HARDDOOM_FIFO_WINDOW:
-		harddoom_fifo_write(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE, val);
-		return;
-	/* And to the TLB.  */
-	case HARDDOOM_TLB_SURF_DST_TAG:
-		d->tlb_tag[TLB_SURF_DST] = val & (HARDDOOM_TLB_TAG_IDX_MASK | HARDDOOM_TLB_TAG_VALID);
-		return;
-	case HARDDOOM_TLB_SURF_DST_PTE:
-		d->tlb_pte[TLB_SURF_DST] = val & (HARDDOOM_PTE_PHYS_MASK | HARDDOOM_PTE_VALID);
-		return;
-	case HARDDOOM_TLB_SURF_SRC_TAG:
-		d->tlb_tag[TLB_SURF_SRC] = val & (HARDDOOM_TLB_TAG_IDX_MASK | HARDDOOM_TLB_TAG_VALID);
-		return;
-	case HARDDOOM_TLB_SURF_SRC_PTE:
-		d->tlb_pte[TLB_SURF_SRC] = val & (HARDDOOM_PTE_PHYS_MASK | HARDDOOM_PTE_VALID);
-		return;
-	case HARDDOOM_TLB_TEXTURE_TAG:
-		d->tlb_tag[TLB_TEXTURE] = val & (HARDDOOM_TLB_TAG_IDX_MASK | HARDDOOM_TLB_TAG_VALID);
-		return;
-	case HARDDOOM_TLB_TEXTURE_PTE:
-		d->tlb_pte[TLB_TEXTURE] = val & (HARDDOOM_PTE_PHYS_MASK | HARDDOOM_PTE_VALID);
-		return;
-	/* Direct access to DRAW state.  */
-	case HARDDOOM_DRAW_X_CUR:
-		d->draw_x_cur = val & 0x07ff07ff;
-		return;
-	case HARDDOOM_DRAW_Y_CUR:
-		d->draw_y_cur = val & 0x07ff07ff;
-		return;
-	case HARDDOOM_DRAW_X_RESTART:
-		d->draw_x_restart = val & 0x07ff07ff;
-		return;
-	case HARDDOOM_DRAW_END:
-		d->draw_end = val & 0x07ff07ff;
-		return;
-	case HARDDOOM_DRAW_TEXCOORD_U:
-		d->draw_texcoord_u = val & 0x003fffff;
-		return;
-	case HARDDOOM_DRAW_TEXCOORD_V:
-		d->draw_texcoord_v = val & 0x03ffffff;
-		return;
-	case HARDDOOM_DRAW_STATE:
-		d->draw_state = val & 0x1fff3f3f;
-		harddoom_status_update(d);
-		harddoom_schedule(d);
-		return;
-	case HARDDOOM_DRAW_LINE_SIZE:
-		d->draw_line_size = val & 0x07ff07ff;
-		return;
-	case HARDDOOM_DRAW_COLUMN_OFFSET:
-		d->draw_column_offset = val & 0x003fffff;
-		return;
-	/* Direct access to the cache.  */
-	case HARDDOOM_CACHE_STATE:
-		d->cache_state = val & 0x111f7fff;
-		return;
+		found = true;
 	}
-	/* Direct access to the commands.  */
-	if (addr >= HARDDOOM_STATE_SURF_DST_PT && addr <= HARDDOOM_TRIGGER_INTERLOCK && !(addr & 3)) {
-		harddoom_do_command(d, addr >> 2 & 0x3f, val);
-		return;
-	}
-	fprintf(stderr, "harddoom error: invalid register write at %03x, value %08x\n", (int)addr, val);
+	if (!found)
+		fprintf(stderr, "harddoom error: invalid register write at %03x, value %08x\n", (int)addr, val);
+	harddoom_status_update(d);
+	qemu_cond_signal(&d->cond);
+	qemu_mutex_unlock(&d->mutex);
 }
 
 static uint32_t harddoom_mmio_readb(void *opaque, hwaddr addr)
 {
-	int i;
+	int i, idx;
+	uint8_t res = 0xff;
+	bool found = false;
 	HardDoomState *d = opaque;
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_TEXTURE(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		return d->cache_data_texture[i];
+	qemu_mutex_lock(&d->mutex);
+	for (i = 0; i < ARRAY_SIZE(harddoom_registers); i++) {
+		struct harddoom_register *desc = &harddoom_registers[i];
+		if (addr >= desc->bar_off && addr < desc->bar_off + desc->num && desc->type == REG_TYPE_SIMPLE_8) {
+			uint8_t *reg = (void *)((char *)opaque + desc->vm_off);
+			idx = addr - desc->bar_off;
+			res = reg[idx];
+			found = true;
+		}
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_FLAT(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		return d->cache_data_flat[i];
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		if ((desc->type == FIFO_TYPE_BLOCK || desc->type == FIFO_TYPE_BLOCK_MASK) && (addr & ~0x3f) == desc->bar_off_window) {
+			idx = addr & 0x3f;
+			uint8_t *data = (void *)((char *)d + desc->vm_off_data);
+			res = data[harddoom_fifo_rptr(d, i) * HARDDOOM_BLOCK_SIZE + idx];
+			found = true;
+			break;
+		}
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_COLORMAP(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		return d->cache_data_colormap[i];
+	if (!found) {
+		fprintf(stderr, "harddoom error: byte-sized read at %03x\n", (int)addr);
+		res = 0xff;
 	}
-	if ((addr & ~(HARDDOOM_CACHE_SIZE - 1)) == HARDDOOM_CACHE_DATA_TRANSLATION(0)) {
-		i = addr & (HARDDOOM_CACHE_SIZE - 1);
-		return d->cache_data_translation[i];
-	}
-	fprintf(stderr, "harddoom error: byte-sized read at %03x\n", (int)addr);
-	return 0xff;
+	qemu_mutex_unlock(&d->mutex);
+	return res;
 }
 
 static uint32_t harddoom_mmio_readw(void *opaque, hwaddr addr)
@@ -1115,101 +768,74 @@ static uint32_t harddoom_mmio_readw(void *opaque, hwaddr addr)
 static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 {
 	HardDoomState *d = opaque;
-	switch(addr) {
-	/* Documented registers... */
-	case HARDDOOM_ENABLE:
-		return d->enable;
-	case HARDDOOM_STATUS:
-		return d->status;
-	case HARDDOOM_INTR:
-		return d->intr;
-	case HARDDOOM_INTR_ENABLE:
-		return d->intr_enable;
-	case HARDDOOM_FENCE_LAST:
-		return d->fence_last;
-	case HARDDOOM_FENCE_WAIT:
-		return d->fence_wait;
-	case HARDDOOM_CMD_READ_PTR:
-		return d->cmd_read_ptr;
-	case HARDDOOM_CMD_WRITE_PTR:
-		return d->cmd_write_ptr;
-	case HARDDOOM_FIFO_FREE:
-		return harddoom_fifo_free(d->fifo_state, HARDDOOM_FIFO_SIZE);
-	case HARDDOOM_FIFO_STATE:
-		return d->fifo_state;
-	case HARDDOOM_FIFO_WINDOW:
-		return harddoom_fifo_read(d->fifo_data, &d->fifo_state, HARDDOOM_FIFO_SIZE);
-	/* Undocumented registers - direct TLB access.  */
-	case HARDDOOM_TLB_SURF_DST_TAG:
-		return d->tlb_tag[TLB_SURF_DST];
-	case HARDDOOM_TLB_SURF_DST_PTE:
-		return d->tlb_pte[TLB_SURF_DST];
-	case HARDDOOM_TLB_SURF_SRC_TAG:
-		return d->tlb_tag[TLB_SURF_SRC];
-	case HARDDOOM_TLB_SURF_SRC_PTE:
-		return d->tlb_pte[TLB_SURF_SRC];
-	case HARDDOOM_TLB_TEXTURE_TAG:
-		return d->tlb_tag[TLB_TEXTURE];
-	case HARDDOOM_TLB_TEXTURE_PTE:
-		return d->tlb_pte[TLB_TEXTURE];
-	/* Direct state command access.  */
-	case HARDDOOM_STATE_SURF_DST_PT:
-		return d->state_pt[TLB_SURF_DST];
-	case HARDDOOM_STATE_SURF_SRC_PT:
-		return d->state_pt[TLB_SURF_SRC];
-	case HARDDOOM_STATE_TEXTURE_PT:
-		return d->state_pt[TLB_TEXTURE];
-	case HARDDOOM_STATE_COLORMAP_ADDR:
-		return d->state_colormap_addr[0];
-	case HARDDOOM_STATE_TRANSLATION_ADDR:
-		return d->state_colormap_addr[1];
-	case HARDDOOM_STATE_FLAT_ADDR:
-		return d->state_flat_addr;
-	case HARDDOOM_STATE_SURF_DIMS:
-		return d->state_surf_dims;
-	case HARDDOOM_STATE_TEXTURE_DIMS:
-		return d->state_texture_dims;
-	case HARDDOOM_STATE_FILL_COLOR:
-		return d->state_fill_color;
-	case HARDDOOM_STATE_XY_A:
-		return d->state_xy[0];
-	case HARDDOOM_STATE_XY_B:
-		return d->state_xy[1];
-	case HARDDOOM_STATE_DRAW_PARAMS:
-		return d->state_draw_params;
-	case HARDDOOM_STATE_USTART:
-		return d->state_uvstart[0];
-	case HARDDOOM_STATE_VSTART:
-		return d->state_uvstart[1];
-	case HARDDOOM_STATE_USTEP:
-		return d->state_uvstep[0];
-	case HARDDOOM_STATE_VSTEP:
-		return d->state_uvstep[1];
-	/* DRAW state.  */
-	case HARDDOOM_DRAW_X_CUR:
-		return d->draw_x_cur;
-	case HARDDOOM_DRAW_Y_CUR:
-		return d->draw_y_cur;
-	case HARDDOOM_DRAW_X_RESTART:
-		return d->draw_x_restart;
-	case HARDDOOM_DRAW_END:
-		return d->draw_end;
-	case HARDDOOM_DRAW_TEXCOORD_U:
-		return d->draw_texcoord_u;
-	case HARDDOOM_DRAW_TEXCOORD_V:
-		return d->draw_texcoord_v;
-	case HARDDOOM_DRAW_STATE:
-		return d->draw_state;
-	case HARDDOOM_DRAW_LINE_SIZE:
-		return d->draw_line_size;
-	case HARDDOOM_DRAW_COLUMN_OFFSET:
-		return d->draw_column_offset;
-	/* CACHE state.  */
-	case HARDDOOM_CACHE_STATE:
-		return d->cache_state;
+	uint32_t res = 0xffffffff;
+	qemu_mutex_lock(&d->mutex);
+	bool found = false;
+	int i, idx;
+	for (i = 0; i < ARRAY_SIZE(harddoom_registers); i++) {
+		struct harddoom_register *desc = &harddoom_registers[i];
+		if (addr >= desc->bar_off && addr < desc->bar_off + desc->num * 4 && !(addr & 3) && desc->type == REG_TYPE_SIMPLE_32) {
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off);
+			idx = (addr - desc->bar_off) >> 2;
+			res = reg[idx];
+			found = true;
+			break;
+		}
+		if (addr == desc->bar_off && desc->type == REG_TYPE_WINDOW_32) {
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off);
+			uint32_t *idx = (void *)((char *)opaque + desc->vm_off_idx);
+			res = reg[*idx];
+			(*idx)++;
+			(*idx) &= desc->num - 1;
+			found = true;
+			break;
+		}
+		if (addr == desc->bar_off && desc->type == REG_TYPE_MASK) {
+			uint64_t *reg = (void *)((char *)opaque + desc->vm_off);
+			res = *reg;
+			found = true;
+		}
+		if (addr == desc->bar_off + 4 && desc->type == REG_TYPE_MASK) {
+			uint64_t *reg = (void *)((char *)opaque + desc->vm_off);
+			res = *reg >> 32;
+			found = true;
+		}
 	}
-	fprintf(stderr, "harddoom error: invalid register read at %03x\n", (int)addr);
-	return 0xffffffff;
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		if (addr == desc->bar_off_state) {
+			uint32_t *reg = (void *)((char *)opaque + desc->vm_off_state);
+			res = *reg;
+			found = true;
+			break;
+		}
+		if (desc->type == FIFO_TYPE_32 && addr == desc->bar_off_window) {
+			res = harddoom_fifo32_read(d, i);
+			found = true;
+			break;
+		}
+		// XXX mask access
+	}
+	if (addr == HARDDOOM_STATUS) {
+		res = d->status;
+		found = true;
+	}
+	if (addr == HARDDOOM_INTR) {
+		res = d->intr;
+		found = true;
+	}
+	if (addr == HARDDOOM_FIFO_FREE) {
+		res = harddoom_fifo_free(d, FIFO_MAIN);
+		found = true;
+	}
+	if (!found) {
+		fprintf(stderr, "harddoom error: invalid register read at %03x\n", (int)addr);
+		res = 0xffffffff;
+	}
+	harddoom_status_update(d);
+	qemu_cond_signal(&d->cond);
+	qemu_mutex_unlock(&d->mutex);
+	return res;
 }
 
 static const MemoryRegionOps harddoom_mmio_ops = {
@@ -1225,61 +851,1483 @@ static const MemoryRegionOps harddoom_mmio_ops = {
 			harddoom_mmio_writel,
 		},
 	},
-	.endianness = DEVICE_NATIVE_ENDIAN,
+	.endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 /* Power-up reset of the device.  */
-static void harddoom_reset(DeviceState *d)
+static void harddoom_power_reset(DeviceState *ds)
 {
-	HardDoomState *s = container_of(d, HardDoomState, dev.qdev);
-	int i;
+	HardDoomState *s = container_of(ds, HardDoomState, dev.qdev);
+	int i, j;
+	qemu_mutex_lock(&s->mutex);
+	for (i = 0; i < ARRAY_SIZE(harddoom_registers); i++) {
+		struct harddoom_register *desc = &harddoom_registers[i];
+		if (desc->type == REG_TYPE_SIMPLE_32 || desc->type == REG_TYPE_WINDOW_32) {
+			uint32_t *reg = (void *)((char *)s + desc->vm_off);
+			for (j = 0; j < desc->num; j++)
+				reg[j] = mrand48() & desc->mask;
+		} else if (desc->type == REG_TYPE_SIMPLE_8) {
+			uint8_t *reg = (void *)((char *)s + desc->vm_off);
+			for (j = 0; j < desc->num; j++)
+				reg[j] = mrand48() & desc->mask;
+		} else if (desc->type == REG_TYPE_MASK) {
+			uint64_t *reg = (void *)((char *)s + desc->vm_off);
+			*reg = (uint64_t)mrand48() << 32;
+			*reg |= (uint32_t)mrand48();
+		}
+	}
+	for (i = 0; i < ARRAY_SIZE(harddoom_fifos); i++) {
+		struct harddoom_fifo *desc = &harddoom_fifos[i];
+		uint32_t mask = (2 * desc->size - 1) * 0x10001;
+		uint32_t *state = (void *)((char *)s + desc->vm_off_state);
+		*state = mrand48() & mask;
+		if (desc->type == FIFO_TYPE_32) {
+			uint32_t *data = (void *)((char *)s + desc->vm_off_data);
+			for (j = 0; j < desc->size; j++)
+				data[j] = mrand48();
+		}
+		if (desc->type == FIFO_TYPE_BLOCK || desc->type == FIFO_TYPE_BLOCK_MASK) {
+			uint8_t *data = (void *)((char *)s + desc->vm_off_data);
+			for (j = 0; j < desc->size * HARDDOOM_BLOCK_SIZE; j++)
+				data[j] = mrand48();
+		}
+		if (desc->type == FIFO_TYPE_MASK || desc->type == FIFO_TYPE_BLOCK_MASK) {
+			uint64_t *mask = (void *)((char *)s + desc->vm_off_mask);
+			for (j = 0; j < desc->size; j++) {
+				mask[j] = (uint64_t)mrand48() << 32;
+				mask[j] |= (uint32_t)mrand48();
+			}
+		}
+	}
+	s->intr = mrand48() & HARDDOOM_INTR_MASK;
 	/* These registers play fair. */
 	s->enable = 0;
 	s->intr_enable = 0;
-	/* But these don't; hardware is evil. */
-	s->intr = mrand48() & HARDDOOM_INTR_MASK;
-	s->fence_last = mrand48() & HARDDOOM_FENCE_MASK;
-	s->fence_wait = mrand48() & HARDDOOM_FENCE_MASK;
-	s->cmd_read_ptr = mrand48() & ~3;
-	s->cmd_write_ptr = mrand48() & ~3;
-	for (i = 0; i < 3; i++) {
-		s->tlb_tag[i] = mrand48() & (HARDDOOM_TLB_TAG_IDX_MASK | HARDDOOM_TLB_TAG_VALID);
-		s->tlb_pte[i] = mrand48() & (HARDDOOM_PTE_PHYS_MASK | HARDDOOM_PTE_VALID);
-		s->state_pt[i] = mrand48() & 0x3ffffff;
-	}
-	s->state_colormap_addr[0] = mrand48() & 0xffffff;
-	s->state_colormap_addr[1] = mrand48() & 0xffffff;
-	s->state_flat_addr = mrand48() & 0xfffff;
-	s->state_surf_dims = mrand48() & 0xfffff;
-	s->state_texture_dims = mrand48() & 0x3fff3ff;
-	s->state_fill_color = mrand48() & 0xff;
-	s->state_xy[0] = mrand48() & 0x7ff7ff;
-	s->state_xy[1] = mrand48() & 0x7ff7ff;
-	s->state_draw_params = mrand48() & 7;
-	s->state_uvstart[0] = mrand48() & 0x3ffffff;
-	s->state_uvstart[1] = mrand48() & 0x3ffffff;
-	s->state_uvstep[0] = mrand48() & 0x3ffffff;
-	s->state_uvstep[1] = mrand48() & 0x3ffffff;
-	s->draw_x_cur = mrand48() & 0x07ff07ff;
-	s->draw_y_cur = mrand48() & 0x07ff07ff;
-	s->draw_x_restart = mrand48() & 0x07ff07ff;
-	s->draw_end = mrand48() & 0x07ff07ff;
-	s->draw_texcoord_u = mrand48() & 0x003fffff;
-	s->draw_texcoord_v = mrand48() & 0x03ffffff;
-	s->draw_state = mrand48() & 0x1fff3f3f;
-	s->draw_line_size = mrand48() & 0x07ff07ff;
-	s->draw_column_offset = mrand48() & 0x003fffff;
-	s->cache_state = mrand48() & 0x111f7fff;
-	for (i = 0; i < HARDDOOM_CACHE_SIZE; i++) {
-		s->cache_data_texture[i] = mrand48();
-		s->cache_data_flat[i] = mrand48();
-		s->cache_data_colormap[i] = mrand48();
-		s->cache_data_translation[i] = mrand48();
-	}
-	s->fifo_state = mrand48() & 0x03ff03ff;
-	for (i = 0; i < HARDDOOM_FIFO_SIZE; i++)
-		s->fifo_data[i] = mrand48();
 	harddoom_status_update(s);
+	qemu_mutex_unlock(&s->mutex);
+}
+
+/* Runs FETCH_CMD for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_fetch_cmd(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_FETCH_CMD))
+		return any;
+	while (d->cmd_read_ptr != d->cmd_write_ptr) {
+		/* Now, check if there's some place to put commands.  */
+		if (!harddoom_fifo_free(d, FIFO_MAIN))
+			break;
+		/* There are commands to read, and there's somewhere to put them. Do it.  */
+		uint8_t cmdb[4];
+		pci_dma_read(&d->dev, d->cmd_read_ptr, &cmdb, sizeof cmdb);
+		uint32_t cmd = le32_read(cmdb);
+		d->cmd_read_ptr += sizeof cmdb;
+		if (HARDDOOM_CMD_EXTR_TYPE_HI(cmd) == HARDDOOM_CMD_TYPE_HI_JUMP) {
+			d->cmd_read_ptr = HARDDOOM_CMD_EXTR_JUMP_ADDR(cmd);
+		} else {
+			/* This could cause an INVALID_CMD.  We don't care.  */
+			harddoom_fifo_send(d, cmd);
+		}
+		any = true;
+	}
+	return any;
+}
+
+/* Runs the FE for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_fe(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_FE))
+		return any;
+	if (d->fe_state & HARDDOOM_FE_STATE_WAIT_FIFO)
+		return any;
+	int num_insns = 0x1000;
+	while (num_insns--) {
+		int pc = d->fe_state & HARDDOOM_FE_STATE_PC_MASK;
+		uint32_t insn = d->fe_code[pc++];
+		pc &= HARDDOOM_FE_STATE_PC_MASK;
+		int op1 = insn >> 26 & 0x3f;
+		int op2;
+		int r1, r2, r3;
+		uint32_t imm1, imm2, imm3;
+		uint32_t addr;
+		uint32_t cmd;
+		uint32_t tmp, mask;
+		//printf("FE %03x %08x\n", pc, insn);
+		switch (op1) {
+		case 0x00:
+			/* rri12 format.  */
+			op2 = insn >> 22 & 0xf;
+			r1 = insn >> 17 & 0x1f;
+			r2 = insn >> 12 & 0x1f;
+			imm1 = insn & 0xfff;
+			switch (op2) {
+			case 0x0:
+				/* r1 is third-level opcode.  */
+				switch (r1) {
+				case 0x00:
+					/* rcmd -- read command from FIFO.  r2 is destination register.  */
+					if (harddoom_fifo_can_read(d, FIFO_MAIN)) {
+						d->fe_reg[r2] = harddoom_fifo32_read(d, FIFO_MAIN);
+						//printf("CMD %08x\n", d->fe_reg[r2]);
+					} else {
+						d->fe_state |= HARDDOOM_FE_STATE_WAIT_FIFO;
+						return true;
+					}
+					break;
+				case 0x01:
+					/* error -- trigger FE_ERROR and stop FE.  r2 is register with error command, imm1 is error code.  */
+					d->fe_error_code = imm1;
+					d->fe_error_cmd = d->fe_reg[r2];
+					d->enable &= ~HARDDOOM_ENABLE_FE;
+					d->intr |= HARDDOOM_INTR_FE_ERROR;
+					d->fe_state = pc;
+					return true;
+				case 0x02:
+					/* pong -- trigger PONG_ASYNC.  No arguments.  */
+					d->intr |= HARDDOOM_INTR_PONG_ASYNC;
+					break;
+				case 0x03:
+					/* xycmd -- send a command to XY unit.  r2 is register with command params, imm1 is command type.  */
+					cmd = d->fe_reg[r2] & HARDDOOM_XYCMD_PARAMS_MASK;
+					cmd |= imm1 << HARDDOOM_XYCMD_TYPE_SHIFT;
+					if (!harddoom_fifo_free(d, FIFO_FE2XY)) {
+						return any;
+					} else {
+						//printf("XYCMD %08x\n", cmd);
+						harddoom_fifo32_write(d, FIFO_FE2XY, cmd);
+					}
+					break;
+				case 0x04:
+					/* texcmd -- send a command to TEX unit.  r2 is register with command params, imm1 is command type.  */
+					cmd = d->fe_reg[r2] & HARDDOOM_TEXCMD_PARAMS_MASK;
+					cmd |= imm1 << HARDDOOM_TEXCMD_TYPE_SHIFT;
+					if (!harddoom_fifo_free(d, FIFO_FE2TEX)) {
+						return any;
+					} else {
+						//printf("TEXCMD %08x\n", cmd);
+						harddoom_fifo32_write(d, FIFO_FE2TEX, cmd);
+					}
+					break;
+				case 0x05:
+					/* flcmd -- send a command to FLAT unit.  r2 is register with command params, imm1 is command type.  */
+					cmd = d->fe_reg[r2] & HARDDOOM_FLCMD_PARAMS_MASK;
+					cmd |= imm1 << HARDDOOM_FLCMD_TYPE_SHIFT;
+					if (!harddoom_fifo_free(d, FIFO_FE2FLAT)) {
+						return any;
+					} else {
+						//printf("FLCMD %08x\n", cmd);
+						harddoom_fifo32_write(d, FIFO_FE2FLAT, cmd);
+					}
+					break;
+				case 0x06:
+					/* fzcmd -- send a command to FUZZ unit.  r2 is register with command params, imm1 is command type.  */
+					cmd = d->fe_reg[r2] & HARDDOOM_FZCMD_PARAMS_MASK;
+					cmd |= imm1 << HARDDOOM_FZCMD_TYPE_SHIFT;
+					if (!harddoom_fifo_free(d, FIFO_FE2FUZZ)) {
+						return any;
+					} else {
+						//printf("FZCMD %08x\n", cmd);
+						harddoom_fifo32_write(d, FIFO_FE2FUZZ, cmd);
+					}
+					break;
+				case 0x07:
+					/* ogcmd -- send a command to OG unit.  r2 is register with command params, imm1 is command type.  */
+					cmd = d->fe_reg[r2] & HARDDOOM_OGCMD_PARAMS_MASK;
+					cmd |= imm1 << HARDDOOM_OGCMD_TYPE_SHIFT;
+					if (!harddoom_fifo_free(d, FIFO_FE2OG)) {
+						return any;
+					} else {
+						//printf("OGCMD %08x\n", cmd);
+						harddoom_fifo32_write(d, FIFO_FE2OG, cmd);
+					}
+					break;
+				case 0x08:
+					/* b -- unconditional branch to imm1.  */
+					pc = imm1;
+					break;
+				case 0x09:
+					/* bl -- unconditional branch to imm1, saving return address in r2 register.  */
+					d->fe_reg[r2] = pc;
+					pc = imm1;
+					break;
+				case 0x0a:
+					/* bi -- branch indirect to imm1 + register r2.  */
+					pc = imm1 + d->fe_reg[r2];
+					pc &= HARDDOOM_FE_STATE_PC_MASK;
+					break;
+				case 0x0b:
+					/* stat -- bump statistics counter #imm1.  */
+					d->stats[imm1 & 0xf]++;
+					break;
+				}
+				break;
+			case 0x2:
+				/* bbs -- branch if bit r2 set in register r1.  r2 is treated as an immediate here.  */
+				if (d->fe_reg[r1] >> r2 & 1)
+					pc = imm1;
+				break;
+			case 0x3:
+				/* bbc -- branch if bit clear, like above.  */
+				if (!(d->fe_reg[r1] >> r2 & 1))
+					pc = imm1;
+				break;
+			case 0x4:
+				/* be -- branch if registers equal.  */
+				if (d->fe_reg[r1] == d->fe_reg[r2])
+					pc = imm1;
+				break;
+			case 0x5:
+				/* bne -- branch if registers not equal.  */
+				if (d->fe_reg[r1] != d->fe_reg[r2])
+					pc = imm1;
+				break;
+			case 0x6:
+				/* bg -- branch if register r1 is greater than register r2.  */
+				if (d->fe_reg[r1] > d->fe_reg[r2])
+					pc = imm1;
+				break;
+			case 0x7:
+				/* ble -- branch if register r1 is <= register r2.  */
+				if (d->fe_reg[r1] <= d->fe_reg[r2])
+					pc = imm1;
+				break;
+			case 0x8:
+				/* st -- store register r1 to memory at register r2 + imm1. */
+				addr = d->fe_reg[r2] + imm1;
+				addr &= HARDDOOM_FE_DATA_SIZE - 1;
+				d->fe_data[addr] = d->fe_reg[r1];
+				break;
+			case 0x9:
+				/* ld -- load register r1 from memory at register r2 + imm1. */
+				addr = d->fe_reg[r2] + imm1;
+				addr &= HARDDOOM_FE_DATA_SIZE - 1;
+				d->fe_reg[r1] = d->fe_data[addr];
+				break;
+			}
+			break;
+		case 0x01:
+			/* ri7i12 format.  */
+			op2 = insn >> 24 & 3;
+			r1 = insn >> 19 & 0x1f;
+			imm1 = insn >> 12 & 0x7f;
+			imm2 = insn & 0xfff;
+			switch (op2) {
+			case 0x0:
+				/* bei -- branch if register r1 equal to imm1.  */
+				if (d->fe_reg[r1] == imm1)
+					pc = imm2;
+				break;
+			case 0x1:
+				/* bnei -- branch if register r1 not equal to imm1.  */
+				if (d->fe_reg[r1] != imm1)
+					pc = imm2;
+				break;
+			case 0x2:
+				/* bgi -- branch if register r1 greater than imm1.  */
+				if (d->fe_reg[r1] > imm1)
+					pc = imm2;
+				break;
+			case 0x3:
+				/* blei -- branch if register r1 <= imm1.  */
+				if (d->fe_reg[r1] <= imm1)
+					pc = imm2;
+				break;
+			}
+			break;
+		case 0x02:
+			/* rrrrr format.  */
+			/* mb or mbc -- move bits or move bits and clear others.  r1 is destination register,
+			 * imm1 is destination bit position, r2 is source register, imm2 is source bit position,
+			 * imm3 is size in bits - 1.  */
+			op2 = insn >> 25 & 1;
+			r1 = insn >> 20 & 0x1f;
+			imm1 = insn >> 15 & 0x1f;
+			r2 = insn >> 10 & 0x1f;
+			imm2 = insn >> 5 & 0x1f;
+			imm3 = insn >> 0 & 0x1f;
+			mask = (((uint32_t)2 << imm3) - 1) << imm1;
+			tmp = d->fe_reg[r2] >> imm2 << imm1 & mask;
+			if (op2 == 0) {
+				tmp |= d->fe_reg[r1] & ~mask;
+			}
+			d->fe_reg[r1] = tmp;
+			break;
+		case 0x03:
+			/* mbi -- move bits immediate.  Inserts (imm3+1) bits of imm2 (zero-extended) to register r1 at position imm1.  */
+			r1 = insn >> 21 & 0x1f;
+			imm1 = insn >> 16 & 0x1f;
+			imm2 = insn >> 5 & 0x7ff;
+			imm3 = insn & 0x1f;
+			mask = (((uint32_t)2 << imm3) - 1) << imm1;
+			tmp = imm2 << imm1 & mask;
+			tmp |= d->fe_reg[r1] & ~mask;
+			d->fe_reg[r1] = tmp;
+			break;
+		case 0x04:
+			/* li -- load immediate.  */
+			r1 = insn >> 21 & 0x1f;
+			imm1 = insn & 0xffff;
+			if (imm1 & 0x8000)
+				imm1 |= 0xffff0000;
+			d->fe_reg[r1] = imm1;
+			break;
+		case 0x05:
+			/* ai -- add immediate.  */
+			r1 = insn >> 21 & 0x1f;
+			r2 = insn >> 16 & 0x1f;
+			imm1 = insn & 0xffff;
+			if (imm1 & 0x8000)
+				imm1 |= 0xffff0000;
+			d->fe_reg[r1] = d->fe_reg[r2] + imm1;
+			break;
+		case 0x06:
+			/* a -- add reg r2 + imm1 + reg r3, store to r1.  */
+			r1 = insn >> 21 & 0x1f;
+			r2 = insn >> 16 & 0x1f;
+			imm1 = insn >> 5 & 0x7ff;
+			if (imm1 & 0x400)
+				imm1 |= 0xfffff800;
+			r3 = insn & 0x1f;
+			d->fe_reg[r1] = d->fe_reg[r2] + imm1 + d->fe_reg[r3];
+			break;
+		case 0x07:
+			/* s -- add reg r2 + imm1, subtract reg r3, store to r1.  */
+			r1 = insn >> 21 & 0x1f;
+			r2 = insn >> 16 & 0x1f;
+			imm1 = insn >> 5 & 0x7ff;
+			if (imm1 & 0x400)
+				imm1 |= 0xfffff800;
+			r3 = insn & 0x1f;
+			d->fe_reg[r1] = d->fe_reg[r2] + imm1 - d->fe_reg[r3];
+			break;
+		case 0x08:
+			/* arm -- add reg r2 + reg r3, store sum modulo imm1 to r1.  */
+			r1 = insn >> 21 & 0x1f;
+			r2 = insn >> 16 & 0x1f;
+			imm1 = insn >> 5 & 0x7ff;
+			r3 = insn & 0x1f;
+			d->fe_reg[r1] = d->fe_reg[r2] + d->fe_reg[r3];
+			if (imm1)
+				d->fe_reg[r1] %= imm1;
+			break;
+		case 0x09:
+			/* sign --  store sign of r2-r3 to r1.  */
+			r1 = insn >> 21 & 0x1f;
+			r2 = insn >> 16 & 0x1f;
+			r3 = insn & 0x1f;
+			d->fe_reg[r1] = (d->fe_reg[r2] > d->fe_reg[r3] ? 1 : -1);
+			break;
+		}
+		d->fe_state = pc;
+		any = true;
+	}
+	return any;
+}
+
+/* Runs the XY for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_xy(HardDoomState *d) {
+	bool any = false;
+	int iterations = 0x80;
+	while (iterations--) {
+		bool any_this = false;
+		bool dst_busy = !!HARDDOOM_XYCMD_EXTR_TYPE(d->xy_dst_cmd);
+		bool src_busy = !!HARDDOOM_XYCMD_EXTR_TYPE(d->xy_src_cmd);
+		if (!(d->enable & HARDDOOM_ENABLE_XY))
+			return any;
+		/* If we don't currently have a pending command, fetch one from FE.  */
+		if (!HARDDOOM_XYCMD_EXTR_TYPE(d->xy_cmd) && harddoom_fifo_can_read(d, FIFO_FE2XY)) {
+			d->xy_cmd = harddoom_fifo32_read(d, FIFO_FE2XY);
+			any_this = true;
+		}
+		/* Try to execute the pending command.  */
+		switch (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_cmd)) {
+			case HARDDOOM_XYCMD_TYPE_SURF_DST_PT:
+				/* Can change destination PT iff destination not busy.  */
+				if (dst_busy)
+					break;
+				harddoom_set_pt(d, TLB_SURF_DST, d->xy_cmd << 6);
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+			case HARDDOOM_XYCMD_TYPE_SURF_SRC_PT:
+				/* Can change source PT iff destination not busy.  */
+				if (src_busy)
+					break;
+				harddoom_set_pt(d, TLB_SURF_SRC, d->xy_cmd << 6);
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+			case HARDDOOM_XYCMD_TYPE_SURF_DIMS:
+				/* Can change surf dimensions iff both src and dst are idle.  */
+				if (dst_busy || src_busy)
+					break;
+				d->xy_surf_dims = d->xy_cmd & HARDDOOM_XY_SURF_DIMS_MASK;
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+			case HARDDOOM_XYCMD_TYPE_WRITE_DST_H:
+			case HARDDOOM_XYCMD_TYPE_WRITE_DST_V:
+			case HARDDOOM_XYCMD_TYPE_READ_DST_V:
+			case HARDDOOM_XYCMD_TYPE_RMW_DST_V:
+				/* Pass these to dst subunit if not busy.  */
+				if (dst_busy)
+					break;
+				d->xy_dst_cmd = d->xy_cmd;
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+			case HARDDOOM_XYCMD_TYPE_READ_SRC_H:
+			case HARDDOOM_XYCMD_TYPE_READ_SRC_V:
+				/* Pass these to src subunit if not busy.  */
+				if (src_busy)
+					break;
+				d->xy_src_cmd = d->xy_cmd;
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+			case HARDDOOM_XYCMD_TYPE_INTERLOCK:
+				/* If interlock signal from SW ready, consume it and the command.  Otherwise, wait.  */
+				if (!d->sw2xy_state)
+					break;
+				d->stats[HARDDOOM_STAT_XY_INTERLOCK]++;
+				d->sw2xy_state--;
+				d->xy_cmd = 0;
+				any_this = true;
+				break;
+		}
+		/* Try to step the dst subunit.  */
+		if (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_dst_cmd)) {
+			int x = HARDDOOM_XYCMD_EXTR_X(d->xy_dst_cmd);
+			int y = HARDDOOM_XYCMD_EXTR_Y(d->xy_dst_cmd);
+			uint32_t addr;
+			int count;
+			switch (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_dst_cmd)) {
+				case HARDDOOM_XYCMD_TYPE_WRITE_DST_H:
+					count = HARDDOOM_XYCMD_EXTR_WIDTH(d->xy_dst_cmd);
+					if (!count) {
+						d->xy_dst_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SW))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_DST, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SW, addr);
+						count--;
+						x++;
+						d->xy_dst_cmd = HARDDOOM_XYCMD_WRITE_DST_H(x, y, count);
+						any_this = true;
+					}
+					break;
+				case HARDDOOM_XYCMD_TYPE_WRITE_DST_V:
+					count = HARDDOOM_XYCMD_EXTR_HEIGHT(d->xy_dst_cmd);
+					if (!count) {
+						d->xy_dst_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SW))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_DST, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SW, addr);
+						count--;
+						y++;
+						d->xy_dst_cmd = HARDDOOM_XYCMD_WRITE_DST_V(x, y, count);
+						any_this = true;
+					}
+					break;
+				case HARDDOOM_XYCMD_TYPE_READ_DST_V:
+					count = HARDDOOM_XYCMD_EXTR_HEIGHT(d->xy_dst_cmd);
+					if (!count) {
+						d->xy_dst_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SR))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_DST, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SR, addr);
+						count--;
+						y++;
+						d->xy_dst_cmd = HARDDOOM_XYCMD_READ_DST_V(x, y, count);
+						any_this = true;
+					}
+					break;
+				case HARDDOOM_XYCMD_TYPE_RMW_DST_V:
+					count = HARDDOOM_XYCMD_EXTR_HEIGHT(d->xy_dst_cmd);
+					if (!count) {
+						d->xy_dst_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SR))
+						break;
+					if (!harddoom_fifo_free(d, FIFO_XY2SW))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_DST, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SR, addr);
+						harddoom_fifo32_write(d, FIFO_XY2SW, addr);
+						count--;
+						y++;
+						d->xy_dst_cmd = HARDDOOM_XYCMD_RMW_DST_V(x, y, count);
+						any_this = true;
+					}
+					break;
+			}
+		}
+		/* Try to step the src subunit.  */
+		if (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_src_cmd)) {
+			int x = HARDDOOM_XYCMD_EXTR_X(d->xy_src_cmd);
+			int y = HARDDOOM_XYCMD_EXTR_Y(d->xy_src_cmd);
+			uint32_t addr;
+			int count;
+			switch (HARDDOOM_XYCMD_EXTR_TYPE(d->xy_src_cmd)) {
+				case HARDDOOM_XYCMD_TYPE_READ_SRC_H:
+					count = HARDDOOM_XYCMD_EXTR_WIDTH(d->xy_src_cmd);
+					if (!count) {
+						d->xy_src_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SR))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_SRC, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SR, addr);
+						count--;
+						x++;
+						d->xy_src_cmd = HARDDOOM_XYCMD_READ_SRC_H(x, y, count);
+						any_this = true;
+					}
+					break;
+				case HARDDOOM_XYCMD_TYPE_READ_SRC_V:
+					count = HARDDOOM_XYCMD_EXTR_HEIGHT(d->xy_src_cmd);
+					if (!count) {
+						d->xy_src_cmd = 0;
+						any_this = true;
+						break;
+					}
+					if (!harddoom_fifo_free(d, FIFO_XY2SR))
+						break;
+					if (harddoom_translate_surf_xy(d, TLB_SURF_SRC, x, y, &addr)) {
+						harddoom_fifo32_write(d, FIFO_XY2SR, addr);
+						count--;
+						y++;
+						d->xy_src_cmd = HARDDOOM_XYCMD_READ_SRC_V(x, y, count);
+						any_this = true;
+					}
+					break;
+			}
+		}
+		any |= any_this;
+		if (!any_this)
+			return any;
+	}
+	return any;
+}
+
+/* Runs the SR for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_sr(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_SR))
+		return false;
+	while (1) {
+		uint32_t addr;
+		if (!harddoom_fifo_can_read(d, FIFO_XY2SR))
+			return any;
+		if (!harddoom_fifo_free(d, FIFO_SR2OG))
+			return any;
+		addr = harddoom_fifo32_read(d, FIFO_XY2SR);
+		int wptr = harddoom_fifo_write_manual(d, FIFO_SR2OG);
+		pci_dma_read(&d->dev, addr, &d->sr2og_data[wptr * HARDDOOM_BLOCK_SIZE], HARDDOOM_BLOCK_SIZE);
+		any = true;
+	}
+	return any;
+}
+
+/* Ensures the flat cache is filled with the given line.  */
+static void harddoom_flat_fill_cache(HardDoomState *d, int y) {
+	if ((d->flat_cache_state & HARDDOOM_FLAT_CACHE_STATE_VALID) &&
+		((d->flat_cache_state & HARDDOOM_FLAT_CACHE_STATE_TAG_MASK) == y)) {
+		d->stats[HARDDOOM_STAT_FLAT_CACHE_HIT]++;
+		return;
+	}
+	d->stats[HARDDOOM_STAT_FLAT_CACHE_MISS]++;
+	uint32_t phys = d->flat_addr | y << 6;
+	pci_dma_read(&d->dev, phys, d->flat_cache, HARDDOOM_FLAT_CACHE_SIZE);
+	d->flat_cache_state = y | HARDDOOM_FLAT_CACHE_STATE_VALID;
+}
+
+static bool harddoom_tex_cached(HardDoomState *d, uint32_t offset) {
+	int tag = offset >> 6;
+	return (d->tex_cache_state & HARDDOOM_TEX_CACHE_STATE_VALID) &&
+		(d->tex_cache_state & HARDDOOM_TEX_CACHE_STATE_TAG_MASK) == tag;
+}
+
+/* Ensures the texture cache is filled with the line containing the given offset.
+ * May cause a page fault and disable DRAW.  */
+static bool harddoom_tex_fill_cache(HardDoomState *d, uint32_t offset) {
+	if (harddoom_tex_cached(d, offset)) {
+		d->stats[HARDDOOM_STAT_TEX_CACHE_HIT]++;
+		return true;
+	}
+	d->stats[HARDDOOM_STAT_TEX_CACHE_MISS]++;
+	if (offset < HARDDOOM_CMD_EXTR_TEXTURE_SIZE(d->tex_dims)) {
+		uint32_t phys;
+		if (!harddoom_translate_addr(d, TLB_TEXTURE, offset & ~0x3f, &phys))
+			return false;
+		pci_dma_read(&d->dev, phys, d->tex_cache, HARDDOOM_TEX_CACHE_SIZE);
+	} else {
+		memset(d->tex_cache, 0, sizeof d->tex_cache);
+	}
+	d->tex_cache_state &= ~HARDDOOM_TEX_CACHE_STATE_TAG_MASK;
+	d->tex_cache_state |= offset >> 6;
+	d->tex_cache_state |= HARDDOOM_TEX_CACHE_STATE_VALID;
+	return true;
+}
+
+static uint32_t harddoom_tex_offset(HardDoomState *d, int x) {
+	int height = HARDDOOM_CMD_EXTR_TEXTURE_HEIGHT(d->tex_dims);
+	uint32_t coord = d->tex_column_state[x] & HARDDOOM_TEX_COORD_MASK;
+	uint32_t offset = d->tex_column_offset[x] + (coord >> 16) % height;
+	return offset & HARDDOOM_TEX_OFFSET_MASK;
+}
+
+static void harddoom_tex_step(HardDoomState *d, int x) {
+	uint32_t coord = d->tex_column_state[x];
+	coord += d->tex_column_step[x];
+	coord &= HARDDOOM_TEX_COORD_MASK;
+	d->tex_column_state[x] &= ~HARDDOOM_TEX_COORD_MASK;
+	d->tex_column_state[x] |= coord;
+}
+
+/* Runs the TEX for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_tex(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_TEX))
+		return false;
+	int x, h, pos;
+	while (1) {
+		if (!HARDDOOM_TEXCMD_EXTR_TYPE(d->tex_cmd)) {
+			if (!harddoom_fifo_can_read(d, FIFO_FE2TEX))
+				return any;
+			d->tex_cmd = harddoom_fifo32_read(d, FIFO_FE2TEX);
+			any = true;
+		}
+		switch (HARDDOOM_TEXCMD_EXTR_TYPE(d->tex_cmd)) {
+		case HARDDOOM_TEXCMD_TYPE_TEXTURE_PT:
+			harddoom_set_pt(d, TLB_TEXTURE, d->tex_cmd << 6);
+			d->tex_cache_state &= ~HARDDOOM_TEX_CACHE_STATE_VALID;
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_TEXTURE_DIMS:
+			d->tex_dims = d->tex_cmd & HARDDOOM_TEX_DIMS_MASK;
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_USTART:
+			d->tex_ustart = HARDDOOM_CMD_EXTR_TEX_COORD(d->tex_cmd);
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_USTEP:
+			d->tex_ustep = HARDDOOM_CMD_EXTR_TEX_COORD(d->tex_cmd);
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_START_COLUMN:
+			x = HARDDOOM_TEXCMD_EXTR_START_X(d->tex_cmd);
+			d->stats[HARDDOOM_STAT_TEX_COLUMN]++;
+			d->tex_mask |= 1ull << x;
+			d->tex_column_state[x] = d->tex_ustart;
+			d->tex_column_step[x] = d->tex_ustep;
+			d->tex_column_offset[x] = HARDDOOM_CMD_EXTR_COLUMN_OFFSET(d->tex_cmd);
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_END_COLUMN:
+			x = HARDDOOM_TEXCMD_EXTR_END_X(d->tex_cmd);
+			d->tex_mask &= ~(1ull << x);
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_TEXCMD_TYPE_DRAW_TEX:
+			h = HARDDOOM_TEXCMD_EXTR_DRAW_HEIGHT(d->tex_cmd);
+			x = HARDDOOM_TEXCMD_EXTR_DRAW_X(d->tex_cmd);
+			while (h) {
+				if (!harddoom_fifo_free(d, FIFO_TEX2OG))
+					return any;
+				int wptr = harddoom_fifo_wptr(d, FIFO_TEX2OG);
+				if (d->tex_mask & 1ull << x) {
+					int filled = d->tex_column_state[x] >> HARDDOOM_TEX_COLUMN_STATE_SPEC_SHIFT;
+					uint8_t byte;
+					pos = d->tex_cache_state >> HARDDOOM_TEX_CACHE_STATE_SPEC_POS_SHIFT;
+					if (filled) {
+						byte = d->tex_column_spec_data[x * HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE + pos];
+						filled--;
+					} else {
+						uint32_t offset = harddoom_tex_offset(d, x);
+						if (!harddoom_tex_fill_cache(d, offset))
+							return any;
+						byte = d->tex_cache[offset & 0x3f];
+						harddoom_tex_step(d, x);
+						while (filled < HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE) {
+							pos++;
+							pos &= 0xf;
+							offset = harddoom_tex_offset(d, x);
+							if (!harddoom_tex_cached(d, offset)) {
+								d->stats[HARDDOOM_STAT_TEX_CACHE_SPEC_MISS]++;
+								break;
+							}
+							d->stats[HARDDOOM_STAT_TEX_CACHE_SPEC_HIT]++;
+							d->tex_column_spec_data[x * HARDDOOM_TEX_COLUMN_SPEC_DATA_SIZE + pos] = d->tex_cache[offset & 0x3f];
+							filled++;
+							harddoom_tex_step(d, x);
+						}
+					}
+					d->tex_column_state[x] &= ~HARDDOOM_TEX_COLUMN_STATE_SPEC_MASK;
+					d->tex_column_state[x] |= filled << HARDDOOM_TEX_COLUMN_STATE_SPEC_SHIFT;
+					d->tex2og_data[wptr * HARDDOOM_BLOCK_SIZE + x] = byte;
+					d->stats[HARDDOOM_STAT_TEX_PIXEL]++;
+				}
+				x++;
+				if (x == HARDDOOM_BLOCK_SIZE) {
+					d->tex2og_mask[wptr] = d->tex_mask;
+					harddoom_fifo_write_manual(d, FIFO_TEX2OG);
+					x = 0;
+					h--;
+					pos = d->tex_cache_state >> HARDDOOM_TEX_CACHE_STATE_SPEC_POS_SHIFT;
+					pos++;
+					d->tex_cache_state &= ~HARDDOOM_TEX_CACHE_STATE_SPEC_POS_MASK;
+					d->tex_cache_state |= (pos << HARDDOOM_TEX_CACHE_STATE_SPEC_POS_SHIFT) & HARDDOOM_TEX_CACHE_STATE_SPEC_POS_MASK;
+				}
+				d->tex_cmd &= ~0x3ffff;
+				d->tex_cmd |= x << 12 | h;
+				any = true;
+			}
+			d->tex_cmd = 0;
+			any = true;
+			break;
+		default:
+			return any;
+		}
+	}
+}
+
+/* Runs the FLAT for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_flat(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_FLAT))
+		return false;
+	int pos, num;
+	while (1) {
+		if (!HARDDOOM_FLCMD_EXTR_TYPE(d->flat_cmd)) {
+			if (!harddoom_fifo_can_read(d, FIFO_FE2FLAT))
+				return any;
+			d->flat_cmd = harddoom_fifo32_read(d, FIFO_FE2FLAT);
+			any = true;
+		}
+		switch (HARDDOOM_FLCMD_EXTR_TYPE(d->flat_cmd)) {
+		case HARDDOOM_FLCMD_TYPE_FLAT_ADDR:
+			d->stats[HARDDOOM_STAT_FLAT_REBIND]++;
+			d->flat_addr = HARDDOOM_CMD_EXTR_FLAT_ADDR(d->flat_cmd);
+			d->flat_cmd = 0;
+			d->flat_cache_state &= ~HARDDOOM_FLAT_CACHE_STATE_VALID;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_USTART:
+			d->flat_ucoord = HARDDOOM_FLCMD_EXTR_COORD(d->flat_cmd);
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_VSTART:
+			d->flat_vcoord = HARDDOOM_FLCMD_EXTR_COORD(d->flat_cmd);
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_USTEP:
+			d->flat_ustep = HARDDOOM_FLCMD_EXTR_COORD(d->flat_cmd);
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_VSTEP:
+			d->flat_vstep = HARDDOOM_FLCMD_EXTR_COORD(d->flat_cmd);
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_READ_FLAT:
+			num = HARDDOOM_FLCMD_EXTR_READ_HEIGHT(d->flat_cmd);
+			pos = HARDDOOM_FLCMD_EXTR_READ_Y(d->flat_cmd);
+			while (num) {
+				if (!harddoom_fifo_free(d, FIFO_FLAT2OG))
+					return any;
+				int wptr = harddoom_fifo_write_manual(d, FIFO_FLAT2OG);
+				harddoom_flat_fill_cache(d, pos);
+				memcpy(&d->flat2og_data[wptr * HARDDOOM_BLOCK_SIZE], d->flat_cache, HARDDOOM_BLOCK_SIZE);
+				num--;
+				pos++;
+				pos &= 0x3f;
+				d->flat_cmd &= ~0x3ffff;
+				d->flat_cmd |= pos << 12 | num;
+				d->stats[HARDDOOM_STAT_FLAT_READ_BLOCK]++;
+				any = true;
+			}
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_FLCMD_TYPE_DRAW_SPAN:
+			num = HARDDOOM_FLCMD_EXTR_DRAW_WIDTH(d->flat_cmd);
+			pos = HARDDOOM_FLCMD_EXTR_DRAW_X(d->flat_cmd);
+			while (num) {
+				if (!harddoom_fifo_free(d, FIFO_FLAT2OG))
+					return any;
+				int wptr = harddoom_fifo_wptr(d, FIFO_FLAT2OG);
+				int u = d->flat_ucoord >> 16;
+				int v = d->flat_vcoord >> 16;
+				d->flat_ucoord += d->flat_ustep;
+				d->flat_vcoord += d->flat_vstep;
+				d->flat_ucoord &= HARDDOOM_FLAT_COORD_MASK;
+				d->flat_vcoord &= HARDDOOM_FLAT_COORD_MASK;
+				harddoom_flat_fill_cache(d, v);
+				d->flat2og_data[wptr * HARDDOOM_BLOCK_SIZE + pos] = d->flat_cache[u];
+				num--;
+				pos++;
+				d->stats[HARDDOOM_STAT_FLAT_SPAN_PIXEL]++;
+				if (pos == HARDDOOM_BLOCK_SIZE || num == 0) {
+					harddoom_fifo_write_manual(d, FIFO_FLAT2OG);
+					d->stats[HARDDOOM_STAT_FLAT_SPAN_BLOCK]++;
+					pos = 0;
+				}
+				d->flat_cmd &= ~0x3ffff;
+				d->flat_cmd |= pos << 12 | num;
+				any = true;
+			}
+			d->flat_cmd = 0;
+			any = true;
+			break;
+		default:
+			return any;
+		}
+	}
+}
+
+/* Runs the FUZZ for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_fuzz(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_FUZZ))
+		return false;
+	int x, pos, height;
+	uint64_t mask;
+	while (1) {
+		if (!HARDDOOM_FZCMD_EXTR_TYPE(d->fuzz_cmd)) {
+			if (!harddoom_fifo_can_read(d, FIFO_FE2FUZZ))
+				return any;
+			d->fuzz_cmd = harddoom_fifo32_read(d, FIFO_FE2FUZZ);
+			any = true;
+		}
+		switch (HARDDOOM_FZCMD_EXTR_TYPE(d->fuzz_cmd)) {
+		case HARDDOOM_FZCMD_TYPE_SET_COLUMN:
+			x = HARDDOOM_FZCMD_EXTR_X(d->fuzz_cmd);
+			pos = HARDDOOM_FZCMD_EXTR_POS(d->fuzz_cmd);
+			d->fuzz_position[x] = pos;
+			d->fuzz_cmd = 0;
+			d->stats[HARDDOOM_STAT_FUZZ_COLUMN]++;
+			any = true;
+			break;
+		case HARDDOOM_FZCMD_TYPE_DRAW_FUZZ:
+			height = HARDDOOM_FZCMD_EXTR_HEIGHT(d->fuzz_cmd);
+			while (height) {
+				if (!harddoom_fifo_free(d, FIFO_FUZZ2OG))
+					return any;
+				mask = 0;
+				int wptr = harddoom_fifo_write_manual(d, FIFO_FUZZ2OG);
+				for (x = 0; x < HARDDOOM_BLOCK_SIZE; x++) {
+					if (0x121e650de224aull >> d->fuzz_position[x]++ & 1)
+						mask |= 1ull << x;
+					d->fuzz_position[x] %= 50;
+				}
+				d->fuzz2og_mask[wptr] = mask;
+				height--;
+				d->fuzz_cmd &= ~0xfff;
+				d->fuzz_cmd |= height;
+				any = true;
+			}
+			d->fuzz_cmd = 0;
+			any = true;
+			break;
+		default:
+			return any;
+		}
+	}
+}
+
+static void harddoom_og_bump_pos(HardDoomState *d) {
+	int pos = (d->og_misc & HARDDOOM_OG_MISC_BUF_POS_MASK) >> HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+	d->og_misc &= ~HARDDOOM_OG_MISC_BUF_POS_MASK;
+	pos += HARDDOOM_BLOCK_SIZE;
+	pos &= 0xff;
+	d->og_misc |= pos << HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+}
+
+static bool harddoom_og_buf_fill(HardDoomState *d) {
+	int pos = (d->og_misc & HARDDOOM_OG_MISC_BUF_POS_MASK) >> HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+	uint8_t *src;
+	int cmd = HARDDOOM_OGCMD_EXTR_TYPE(d->og_cmd);
+	int flags = HARDDOOM_OGCMD_EXTR_FLAGS(d->og_cmd);
+	int rptr;
+	switch (cmd) {
+		case HARDDOOM_OGCMD_TYPE_INIT_FUZZ:
+		case HARDDOOM_OGCMD_TYPE_DRAW_FUZZ:
+			pos += 0x40;
+			pos &= 0xff;
+			/* fallthru */
+		case HARDDOOM_OGCMD_TYPE_COPY_H:
+		case HARDDOOM_OGCMD_TYPE_COPY_V:
+			if (!harddoom_fifo_can_read(d, FIFO_SR2OG))
+				return false;
+			rptr = harddoom_fifo_read_manual(d, FIFO_SR2OG);
+			src = &d->sr2og_data[rptr * HARDDOOM_BLOCK_SIZE];
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_SPAN:
+			if (!harddoom_fifo_can_read(d, FIFO_FLAT2OG))
+				return false;
+			rptr = harddoom_fifo_read_manual(d, FIFO_FLAT2OG);
+			src = &d->flat2og_data[rptr * HARDDOOM_BLOCK_SIZE];
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_TEX:
+			if (!harddoom_fifo_can_read(d, FIFO_TEX2OG))
+				return false;
+			rptr = harddoom_fifo_read_manual(d, FIFO_TEX2OG);
+			src = &d->tex2og_data[rptr * HARDDOOM_BLOCK_SIZE];
+			d->og_mask = d->tex2og_mask[rptr];
+			break;
+		default:
+			return true;
+	}
+	if (flags) {
+		int i, j;
+		if (flags & HARDDOOM_OGCMD_FLAG_TRANSLATE)
+			d->stats[HARDDOOM_STAT_OG_TRANSLATE_BLOCK]++;
+		if (flags & HARDDOOM_OGCMD_FLAG_COLORMAP)
+			d->stats[HARDDOOM_STAT_OG_COLORMAP_BLOCK]++;
+		for (i = pos, j = 0; j < HARDDOOM_BLOCK_SIZE; i++, j++, i &= 0xff) {
+			uint8_t byte = src[j];
+			if (flags & HARDDOOM_OGCMD_FLAG_TRANSLATE)
+				byte = d->og_translation[byte];
+			if (flags & HARDDOOM_OGCMD_FLAG_COLORMAP)
+				byte = d->og_colormap[byte];
+			d->og_buf[i] = byte;
+		}
+	} else {
+		if (pos + HARDDOOM_BLOCK_SIZE > sizeof d->og_buf) {
+			int mid = sizeof d->og_buf - pos - HARDDOOM_BLOCK_SIZE;
+			memcpy(d->og_buf + pos, src, mid);
+			memcpy(d->og_buf, src + mid, HARDDOOM_BLOCK_SIZE - mid);
+		} else {
+			memcpy(d->og_buf + pos, src, HARDDOOM_BLOCK_SIZE);
+		}
+	}
+	return true;
+}
+
+static bool harddoom_og_send(HardDoomState *d) {
+	int cmd = HARDDOOM_OGCMD_EXTR_TYPE(d->og_cmd);
+	int pos = (d->og_misc & HARDDOOM_OG_MISC_BUF_POS_MASK) >> HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+	pos &= 0xc0;
+	if (!harddoom_fifo_free(d, FIFO_OG2SW))
+		return false;
+	int wptr = harddoom_fifo_write_manual(d, FIFO_OG2SW);
+	memcpy(&d->og2sw_data[wptr * HARDDOOM_BLOCK_SIZE], d->og_buf + pos, HARDDOOM_BLOCK_SIZE);
+	d->og2sw_mask[wptr] = d->og_mask;
+	switch (cmd) {
+	case HARDDOOM_OGCMD_TYPE_DRAW_BUF_H:
+	case HARDDOOM_OGCMD_TYPE_DRAW_BUF_V:
+		d->stats[HARDDOOM_STAT_OG_DRAW_BUF_BLOCK]++;
+		d->stats[HARDDOOM_STAT_OG_DRAW_BUF_PIXEL] += ctpop64(d->og_mask);
+		break;
+	case HARDDOOM_OGCMD_TYPE_COPY_H:
+	case HARDDOOM_OGCMD_TYPE_COPY_V:
+		d->stats[HARDDOOM_STAT_OG_COPY_BLOCK]++;
+		d->stats[HARDDOOM_STAT_OG_COPY_PIXEL] += ctpop64(d->og_mask);
+		break;
+	case HARDDOOM_OGCMD_TYPE_DRAW_FUZZ:
+		d->stats[HARDDOOM_STAT_OG_FUZZ_PIXEL] += ctpop64(d->og_mask);
+		break;
+	}
+	return true;
+}
+
+/* Runs the OG for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_og(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_OG))
+		return false;
+	int x, w, h;
+	int pos;
+	int cmd;
+	int state;
+	int i;
+	uint8_t *src;
+	uint64_t mask;
+	while (1) {
+		if (!HARDDOOM_OGCMD_EXTR_TYPE(d->og_cmd)) {
+			if (!harddoom_fifo_can_read(d, FIFO_FE2OG))
+				return any;
+			d->og_cmd = harddoom_fifo32_read(d, FIFO_FE2OG);
+			any = true;
+		}
+		cmd = HARDDOOM_OGCMD_EXTR_TYPE(d->og_cmd);
+		switch (cmd) {
+		case HARDDOOM_OGCMD_TYPE_INTERLOCK:
+			if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+				return any;
+			harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_INTERLOCK);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_FENCE:
+			if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+				return any;
+			harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_FENCE(HARDDOOM_CMD_EXTR_FENCE(d->og_cmd)));
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_PING:
+			if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+				return any;
+			harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_PING);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_FILL_COLOR:
+			memset(d->og_buf, HARDDOOM_CMD_EXTR_FILL_COLOR(d->og_cmd), sizeof d->og_buf);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_COLORMAP_ADDR:
+			d->stats[HARDDOOM_STAT_OG_COLORMAP_FETCH]++;
+			pci_dma_read(&d->dev, HARDDOOM_CMD_EXTR_COLORMAP_ADDR(d->og_cmd), d->og_colormap, sizeof d->og_colormap);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_TRANSLATION_ADDR:
+			d->stats[HARDDOOM_STAT_OG_TRANSLATION_FETCH]++;
+			pci_dma_read(&d->dev, HARDDOOM_CMD_EXTR_COLORMAP_ADDR(d->og_cmd), d->og_translation, sizeof d->og_translation);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_BUF_H:
+		case HARDDOOM_OGCMD_TYPE_COPY_H:
+		case HARDDOOM_OGCMD_TYPE_DRAW_SPAN:
+			/* The horizontal draw commands.  */
+			x = HARDDOOM_OGCMD_EXTR_X(d->og_cmd);
+			w = HARDDOOM_OGCMD_EXTR_H_WIDTH(d->og_cmd);
+			while (w) {
+				state = d->og_misc & HARDDOOM_OG_MISC_STATE_MASK;
+				if (state == HARDDOOM_OG_MISC_STATE_INIT) {
+					/* If this is the first iteration, initialize some things and tell the SW unit about the draw.  */
+					int num = (w + x + 0x3f) >> 6;
+					if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+						return any;
+					harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_DRAW(num));
+					state = HARDDOOM_OG_MISC_STATE_RUNNING;
+					d->og_misc &= ~HARDDOOM_OG_MISC_BUF_POS_MASK;
+					if (cmd != HARDDOOM_OGCMD_TYPE_DRAW_BUF_H) {
+						pos = 0;
+						if (cmd == HARDDOOM_OGCMD_TYPE_COPY_H)
+							pos = d->og_misc & HARDDOOM_OG_MISC_SRC_OFFSET_MASK;
+						pos = x - pos;
+						if (pos < 0) {
+							state = HARDDOOM_OG_MISC_STATE_PREFILL;
+							pos += HARDDOOM_BLOCK_SIZE;
+						}
+						d->og_misc |= pos << HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+					}
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= state;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_PREFILL) {
+					/* For some source alignments, we will need to pre-fill an extra source block.  */
+					if (!harddoom_og_buf_fill(d))
+						return any;
+					harddoom_og_bump_pos(d);
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_RUNNING) {
+					/* Now, fill the buffer, if we need to.  */
+					pos = (d->og_misc & HARDDOOM_OG_MISC_BUF_POS_MASK) >> HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+					if (cmd != HARDDOOM_OGCMD_TYPE_DRAW_BUF_H && (pos & 0x3f) < x + w) {
+						if (!harddoom_og_buf_fill(d))
+							return any;
+					}
+					mask = ~0ull << x;
+					if (x + w < HARDDOOM_BLOCK_SIZE)
+						mask &= (1ull << (x + w)) - 1;
+					d->og_mask = mask;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_FILLED;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_FILLED) {
+					/* Everything ready, try to submit to SW.  */
+					if (!harddoom_og_send(d))
+						return any;
+					w -= (HARDDOOM_BLOCK_SIZE - x);
+					if (w < 0)
+						w = 0;
+					x = 0;
+					d->og_cmd &= ~0x3ffff;
+					d->og_cmd |= w << 6;
+					harddoom_og_bump_pos(d);
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else {
+					return any;
+				}
+			}
+			/* Nothing left to do.  */
+			d->og_cmd = 0;
+			d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_BUF_V:
+		case HARDDOOM_OGCMD_TYPE_COPY_V:
+			/* The vertical draw commands.  */
+			x = HARDDOOM_OGCMD_EXTR_X(d->og_cmd);
+			w = HARDDOOM_OGCMD_EXTR_V_WIDTH(d->og_cmd);
+			h = HARDDOOM_OGCMD_EXTR_V_HEIGHT(d->og_cmd);
+			while (h) {
+				state = d->og_misc & HARDDOOM_OG_MISC_STATE_MASK;
+				if (state == HARDDOOM_OG_MISC_STATE_INIT) {
+					/* If this is the first iteration, initialize some things and tell the SW unit about the draw.  */
+					if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+						return any;
+					harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_DRAW(h));
+					d->og_misc &= ~HARDDOOM_OG_MISC_BUF_POS_MASK;
+					pos = 0;
+					if (cmd == HARDDOOM_OGCMD_TYPE_COPY_V)
+						pos = d->og_misc & HARDDOOM_OG_MISC_SRC_OFFSET_MASK;
+					pos = x - pos;
+					if (pos < 0)
+						pos += HARDDOOM_BLOCK_SIZE;
+					d->og_misc |= pos << HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_RUNNING) {
+					/* Now, fill the buffer, if we need to.  */
+					if (cmd != HARDDOOM_OGCMD_TYPE_DRAW_BUF_V) {
+						if (!harddoom_og_buf_fill(d))
+							return any;
+					}
+					mask = ~0ull << x;
+					if (x + w < HARDDOOM_BLOCK_SIZE)
+						mask &= (1ull << (x + w)) - 1;
+					d->og_mask = mask;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_FILLED;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_FILLED) {
+					/* Everything ready, try to submit to SW.  */
+					if (!harddoom_og_send(d))
+						return any;
+					h--;
+					d->og_cmd &= ~0xfff000;
+					d->og_cmd |= h << 12;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else {
+					return any;
+				}
+			}
+			/* Nothing left to do.  */
+			d->og_cmd = 0;
+			d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_SRC_OFFSET:
+			d->og_misc &= ~HARDDOOM_OG_MISC_SRC_OFFSET_MASK;
+			d->og_misc |= HARDDOOM_OGCMD_EXTR_X(d->og_cmd);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_READ_FLAT:
+			if (!harddoom_fifo_can_read(d, FIFO_FLAT2OG))
+				return any;
+			src = &d->flat2og_data[harddoom_fifo_read_manual(d, FIFO_FLAT2OG) * HARDDOOM_BLOCK_SIZE];
+			for (i = 0; i < 4; i++)
+				memcpy(d->og_buf + i * HARDDOOM_BLOCK_SIZE, src, HARDDOOM_BLOCK_SIZE);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_FUZZ:
+			h = HARDDOOM_OGCMD_EXTR_TF_HEIGHT(d->og_cmd);
+			while (h) {
+				state = d->og_misc & HARDDOOM_OG_MISC_STATE_MASK;
+				if (state == HARDDOOM_OG_MISC_STATE_INIT) {
+					/* If this is the first iteration, tell the SW unit about the draw.  */
+					if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+						return any;
+					harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_DRAW(h));
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_PREFILL;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_PREFILL) {
+					/* Fetch the mask from FUZZ.  */
+					if (!harddoom_fifo_can_read(d, FIFO_FUZZ2OG))
+						return any;
+					int rptr = harddoom_fifo_read_manual(d, FIFO_FUZZ2OG);
+					d->og_fuzz_mask = d->fuzz2og_mask[rptr];
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_RUNNING) {
+					/* Now, fill the buffer.  */
+					if (!harddoom_og_buf_fill(d))
+						return any;
+					/* And perform the fuzz.  */
+					int i;
+					pos = (d->og_misc & HARDDOOM_OG_MISC_BUF_POS_MASK) >> HARDDOOM_OG_MISC_BUF_POS_SHIFT;
+					pos &= 0xc0;
+					int prev = (pos - 0x40) & 0xc0;
+					int next = (pos + 0x40) & 0xc0;
+					for (i = 0; i < HARDDOOM_BLOCK_SIZE; i++) {
+						if (d->og_mask & 1ull << i) {
+							uint8_t byte;
+							if (d->og_fuzz_mask & 1ull << i) {
+								byte = d->og_buf[prev+i];
+							} else {
+								byte = d->og_buf[next+i];
+							}
+							d->og_buf[pos+i] = d->og_colormap[byte];
+						}
+					}
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_FILLED;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_FILLED) {
+					/* Everything ready, try to submit to SW.  */
+					if (!harddoom_og_send(d))
+						return any;
+					harddoom_og_bump_pos(d);
+					h--;
+					d->og_cmd &= ~0xfff;
+					d->og_cmd |= h;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_PREFILL;
+					any = true;
+				} else {
+					return any;
+				}
+			}
+			/* Nothing left to do.  */
+			d->og_cmd = 0;
+			d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_INIT_FUZZ:
+			while (1) {
+				state = d->og_misc & HARDDOOM_OG_MISC_STATE_MASK;
+				if (state == HARDDOOM_OG_MISC_STATE_INIT) {
+					d->og_mask = 0;
+					d->og_misc &= ~HARDDOOM_OG_MISC_BUF_POS_MASK;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_PREFILL;
+				} else if (state == HARDDOOM_OG_MISC_STATE_PREFILL) {
+					if (!harddoom_og_buf_fill(d))
+						return any;
+					harddoom_og_bump_pos(d);
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_RUNNING) {
+					if (!harddoom_og_buf_fill(d))
+						return any;
+					harddoom_og_bump_pos(d);
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_cmd = 0;
+					any = true;
+					break;
+				}
+			}
+			break;
+		case HARDDOOM_OGCMD_TYPE_FUZZ_COLUMN:
+			d->og_mask ^= 1ull << HARDDOOM_OGCMD_EXTR_X(d->og_cmd);
+			d->og_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_OGCMD_TYPE_DRAW_TEX:
+			h = HARDDOOM_OGCMD_EXTR_TF_HEIGHT(d->og_cmd);
+			while (h) {
+				state = d->og_misc & HARDDOOM_OG_MISC_STATE_MASK;
+				if (state == HARDDOOM_OG_MISC_STATE_INIT) {
+					/* If this is the first iteration, initialize some things and tell the SW unit about the draw.  */
+					if (!harddoom_fifo_free(d, FIFO_OG2SW_C))
+						return any;
+					harddoom_fifo32_write(d, FIFO_OG2SW_C, HARDDOOM_SWCMD_DRAW(h));
+					d->og_misc &= ~HARDDOOM_OG_MISC_BUF_POS_MASK;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_RUNNING) {
+					/* Now, fill the buffer.  */
+					if (!harddoom_og_buf_fill(d))
+						return any;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_FILLED;
+					any = true;
+				} else if (state == HARDDOOM_OG_MISC_STATE_FILLED) {
+					/* Everything ready, try to submit to SW.  */
+					if (!harddoom_og_send(d))
+						return any;
+					h--;
+					d->og_cmd &= ~0xfff;
+					d->og_cmd |= h;
+					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
+					any = true;
+				} else {
+					return any;
+				}
+			}
+			/* Nothing left to do.  */
+			d->og_cmd = 0;
+			d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
+			any = true;
+			break;
+		default:
+			return any;
+		}
+	}
+}
+
+/* Runs the SW for some time.  Returns true if anything has been done.  */
+static bool harddoom_run_sw(HardDoomState *d) {
+	bool any = false;
+	if (!(d->enable & HARDDOOM_ENABLE_SW))
+		return false;
+	while (1) {
+		if (!HARDDOOM_SWCMD_EXTR_TYPE(d->sw_cmd)) {
+			if (!harddoom_fifo_can_read(d, FIFO_OG2SW_C))
+				return any;
+			d->sw_cmd = harddoom_fifo32_read(d, FIFO_OG2SW_C);
+			any = true;
+		}
+		switch (HARDDOOM_SWCMD_EXTR_TYPE(d->sw_cmd)) {
+		case HARDDOOM_SWCMD_TYPE_INTERLOCK:
+			if (d->sw2xy_state == HARDDOOM_SW2XY_STATE_MASK)
+				return any;
+			d->sw2xy_state++;
+			d->sw_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_SWCMD_TYPE_FENCE:
+			d->fence_last = HARDDOOM_CMD_EXTR_FENCE(d->sw_cmd);
+			d->stats[HARDDOOM_STAT_SW_FENCE]++;
+			if (d->fence_last == d->fence_wait) {
+				d->stats[HARDDOOM_STAT_SW_FENCE_INTR]++;
+				d->intr |= HARDDOOM_INTR_FENCE;
+			}
+			d->sw_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_SWCMD_TYPE_PING:
+			d->intr |= HARDDOOM_INTR_PONG_SYNC;
+			d->sw_cmd = 0;
+			any = true;
+			break;
+		case HARDDOOM_SWCMD_TYPE_DRAW:
+			if (!HARDDOOM_SWCMD_EXTR_BLOCKS(d->sw_cmd)) {
+				/* We're done.  */
+				d->sw_cmd = 0;
+				any = true;
+				break;
+			}
+			/* Otherwise, see if we have both data and address.  */
+			if (!harddoom_fifo_can_read(d, FIFO_XY2SW))
+				return any;
+			if (!harddoom_fifo_can_read(d, FIFO_OG2SW))
+				return any;
+			uint32_t addr = harddoom_fifo32_read(d, FIFO_XY2SW);
+			int rptr = harddoom_fifo_read_manual(d, FIFO_OG2SW);
+			uint64_t mask = d->og2sw_mask[rptr];
+			uint8_t *data = d->og2sw_data + rptr * HARDDOOM_BLOCK_SIZE;
+			int pos = 0;
+			while (mask) {
+				if (!(mask & 1)) {
+					/* Run of 0.  */
+					int len = ctz64(mask);
+					if (pos+len > 64) {
+						abort();
+					}
+					pos += len;
+					if (len == 64)
+						break;
+					mask >>= len;
+				} else {
+					/* Run of 1 -- draw.  */
+					int len = 64;
+					if (~mask)
+						len = ctz64(~mask);
+					d->stats[HARDDOOM_STAT_SW_XFER]++;
+					d->stats[HARDDOOM_STAT_SW_PIXEL] += len;
+					pci_dma_write(&d->dev, addr+pos, data+pos, len);
+					if (pos+len > 64) {
+						abort();
+					}
+					pos += len;
+					if (len == 64)
+						break;
+					mask >>= len;
+				}
+			}
+			d->sw_cmd--;
+			any = true;
+			break;
+		default:
+			return any;
+		}
+	}
+}
+
+static void *harddoom_thread(void *opaque)
+{
+	HardDoomState *d = opaque;
+	qemu_mutex_lock(&d->mutex);
+	while (1) {
+		if (d->stopping)
+			break;
+		qemu_mutex_unlock(&d->mutex);
+		qemu_mutex_lock_iothread();
+		qemu_mutex_lock(&d->mutex);
+		bool idle = true;
+		if (harddoom_run_fetch_cmd(d))
+			idle = false;
+		if (harddoom_run_fe(d))
+			idle = false;
+		if (harddoom_run_xy(d))
+			idle = false;
+		if (harddoom_run_sr(d))
+			idle = false;
+		if (harddoom_run_tex(d))
+			idle = false;
+		if (harddoom_run_flat(d))
+			idle = false;
+		if (harddoom_run_fuzz(d))
+			idle = false;
+		if (harddoom_run_og(d))
+			idle = false;
+		if (harddoom_run_sw(d))
+			idle = false;
+		harddoom_status_update(d);
+		qemu_mutex_unlock_iothread();
+		if (idle) {
+			qemu_cond_wait(&d->cond, &d->mutex);
+		}
+	}
+	qemu_mutex_unlock(&d->mutex);
+	return 0;
 }
 
 static int harddoom_init(PCIDevice *pci_dev)
@@ -1292,8 +2340,14 @@ static int harddoom_init(PCIDevice *pci_dev)
 	memory_region_init_io(&d->mmio, OBJECT(d), &harddoom_mmio_ops, d, "harddoom", 0x1000);
 	pci_register_bar(&d->dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &d->mmio);
 
-	harddoom_reset(&pci_dev->qdev);
-	d->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, harddoom_tick, d);
+	qemu_mutex_init(&d->mutex);
+	qemu_cond_init(&d->cond);
+
+	harddoom_power_reset(&pci_dev->qdev);
+
+	d->stopping = false;
+	qemu_thread_create(&d->thread, "harddoom", harddoom_thread,
+			d, QEMU_THREAD_JOINABLE);
 
 	return 0;
 }
@@ -1301,8 +2355,13 @@ static int harddoom_init(PCIDevice *pci_dev)
 static void harddoom_exit(PCIDevice *pci_dev)
 {
 	HardDoomState *d = DO_UPCAST(HardDoomState, dev, pci_dev);
-
-	timer_free(d->timer);
+	qemu_mutex_lock(&d->mutex);
+	d->stopping = true;
+	qemu_mutex_unlock(&d->mutex);
+	qemu_cond_signal(&d->cond);
+	qemu_thread_join(&d->thread);
+	qemu_cond_destroy(&d->cond);
+	qemu_mutex_destroy(&d->mutex);
 }
 
 static Property harddoom_properties[] = {
@@ -1319,7 +2378,7 @@ static void harddoom_class_init(ObjectClass *klass, void *data)
 	k->vendor_id = HARDDOOM_VENDOR_ID;
 	k->device_id = HARDDOOM_DEVICE_ID;
 	k->class_id = PCI_CLASS_PROCESSOR_CO;
-	dc->reset = harddoom_reset;
+	dc->reset = harddoom_power_reset;
 	dc->vmsd = &vmstate_harddoom;
 	dc->props = harddoom_properties;
 }
