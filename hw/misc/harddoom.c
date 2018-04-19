@@ -700,7 +700,20 @@ static void harddoom_mmio_writel(void *opaque, hwaddr addr, uint32_t val)
 			found = true;
 			break;
 		}
-		// XXX mask access
+		if ((desc->type == FIFO_TYPE_MASK || desc->type == FIFO_TYPE_BLOCK_MASK) && addr == desc->bar_off_mask) {
+			uint64_t *data = (void *)((char *)d + desc->vm_off_mask);
+			int wptr = harddoom_fifo_wptr(d, i);
+			data[wptr] &= ~0xffffffffull;
+			data[wptr] |= val;
+			found = true;
+		}
+		if ((desc->type == FIFO_TYPE_MASK || desc->type == FIFO_TYPE_BLOCK_MASK) && addr == desc->bar_off_mask + 4) {
+			uint64_t *data = (void *)((char *)d + desc->vm_off_mask);
+			int wptr = harddoom_fifo_wptr(d, i);
+			data[wptr] &= 0xffffffffull;
+			data[wptr] |= (uint64_t)val << 32;
+			found = true;
+		}
 	}
 	if (addr == HARDDOOM_RESET) {
 		harddoom_reset(d, val);
@@ -814,7 +827,18 @@ static uint32_t harddoom_mmio_readl(void *opaque, hwaddr addr)
 			found = true;
 			break;
 		}
-		// XXX mask access
+		if ((desc->type == FIFO_TYPE_MASK || desc->type == FIFO_TYPE_BLOCK_MASK) && addr == desc->bar_off_mask) {
+			uint64_t *data = (void *)((char *)d + desc->vm_off_mask);
+			int wptr = harddoom_fifo_rptr(d, i);
+			res = data[wptr];
+			found = true;
+		}
+		if ((desc->type == FIFO_TYPE_MASK || desc->type == FIFO_TYPE_BLOCK_MASK) && addr == desc->bar_off_mask + 4) {
+			uint64_t *data = (void *)((char *)d + desc->vm_off_mask);
+			int wptr = harddoom_fifo_rptr(d, i);
+			res = data[wptr] >> 32;
+			found = true;
+		}
 	}
 	if (addr == HARDDOOM_STATUS) {
 		res = d->status;
