@@ -1810,8 +1810,9 @@ static bool harddoom_og_buf_fill(HardDoomState *d) {
 			pos += 0x40;
 			pos &= 0xff;
 			/* fallthru */
-		case HARDDOOM_OGCMD_TYPE_COPY_H:
 		case HARDDOOM_OGCMD_TYPE_COPY_V:
+			pos &= 0x3f;
+		case HARDDOOM_OGCMD_TYPE_COPY_H:
 			if (!harddoom_fifo_can_read(d, FIFO_SR2OG))
 				return false;
 			rptr = harddoom_fifo_read_manual(d, FIFO_SR2OG);
@@ -1849,7 +1850,7 @@ static bool harddoom_og_buf_fill(HardDoomState *d) {
 		}
 	} else {
 		if (pos + HARDDOOM_BLOCK_SIZE > sizeof d->og_buf) {
-			int mid = sizeof d->og_buf - pos - HARDDOOM_BLOCK_SIZE;
+			int mid = sizeof d->og_buf - pos;
 			memcpy(d->og_buf + pos, src, mid);
 			memcpy(d->og_buf, src + mid, HARDDOOM_BLOCK_SIZE - mid);
 		} else {
@@ -2039,7 +2040,7 @@ static bool harddoom_run_og(HardDoomState *d) {
 						pos = d->og_misc & HARDDOOM_OG_MISC_SRC_OFFSET_MASK;
 					pos = x - pos;
 					if (pos < 0)
-						pos += HARDDOOM_BLOCK_SIZE;
+						pos += 2 * HARDDOOM_BLOCK_SIZE;
 					d->og_misc |= pos << HARDDOOM_OG_MISC_BUF_POS_SHIFT;
 					d->og_misc &= ~HARDDOOM_OG_MISC_STATE_MASK;
 					d->og_misc |= HARDDOOM_OG_MISC_STATE_RUNNING;
