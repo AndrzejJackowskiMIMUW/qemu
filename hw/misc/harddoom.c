@@ -513,6 +513,7 @@ static void harddoom_reset(HardDoomState *d, uint32_t val) {
 	}
 	if (val & HARDDOOM_RESET_TEX) {
 		d->tex_cmd = 0;
+		d->tex_mask = 0;
 	}
 	if (val & HARDDOOM_RESET_FLAT) {
 		d->flat_cmd = 0;
