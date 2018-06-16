@@ -562,10 +562,10 @@
 #define HARDDOOM_TEX_CACHE_STATE		0x868
 #define HARDDOOM_TEX_CACHE_STATE_TAG_MASK	0x0000ffff
 #define HARDDOOM_TEX_CACHE_STATE_VALID		0x00010000
-#define HARDDOOM_TEX_CACHE_STATE_MASK		0x0001ffff
 /* The position of the current block in the speculative texturing buffers.  */
 #define HARDDOOM_TEX_CACHE_STATE_SPEC_POS_MASK	0x00f00000
 #define HARDDOOM_TEX_CACHE_STATE_SPEC_POS_SHIFT	20
+#define HARDDOOM_TEX_CACHE_STATE_MASK		0x00f1ffff
 /* The TEX -> OG FIFO.  Each entry consists of a 64-byte block and a 64-bit
  * active column mask.  */
 #define HARDDOOM_TEX2OG_STATE			0x874
