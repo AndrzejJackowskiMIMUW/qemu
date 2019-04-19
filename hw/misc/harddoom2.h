@@ -451,7 +451,7 @@
 /* A block was sent to SW by the COPY_* command.  */
 #define HARDDOOM2_STAT_OG_COPY_BLOCK			0x42
 /* A pixel was sent to SW by the COPY_* command.  */
-#define HARDDOOM2_STAT_OG_COPY_PIXEL			0x42
+#define HARDDOOM2_STAT_OG_COPY_PIXEL			0x43
 /* A block was processed by the translation color map.  */
 #define HARDDOOM2_STAT_OG_TRANSLATION_BLOCK		0x44
 /* A block was processed by the main color map.  */
