@@ -2223,6 +2223,8 @@ static bool harddoom2_run_og(HardDoom2State *d) {
 			int x = HARDDOOM2_OGCMD_DATA_EXTR_X(d->og_data);
 			int w = HARDDOOM2_OGCMD_DATA_EXTR_V_WIDTH(d->og_data);
 			int h = HARDDOOM2_OGCMD_DATA_EXTR_V_HEIGHT(d->og_data);
+			if (!w)
+				w = HARDDOOM2_BLOCK_SIZE;
 			while (h) {
 				uint32_t state = d->og_state & HARDDOOM2_OG_STATE_STATE_MASK;
 				if (state == HARDDOOM2_OG_STATE_STATE_INIT) {
