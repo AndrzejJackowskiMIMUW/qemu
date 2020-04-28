@@ -53,6 +53,11 @@ config PCA9552
     bool
     depends on I2C
 
+config ADLERDEV
+    bool
+    default y if PCI
+    depends on PCI
+
 config PL310
     bool
 
