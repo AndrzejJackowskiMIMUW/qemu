@@ -45,6 +45,11 @@ config ADLERDEV
     default y if PCI
     depends on PCI
 
+config UHARDDOOM
+    bool
+    default y if PCI
+    depends on PCI
+
 config PL310
     bool
 
