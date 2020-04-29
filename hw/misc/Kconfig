@@ -58,6 +58,11 @@ config ADLERDEV
     default y if PCI
     depends on PCI
 
+config FHARDDOOM
+    bool
+    default y if PCI
+    depends on PCI
+
 config PL310
     bool
 
