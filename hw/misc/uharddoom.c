@@ -215,6 +215,7 @@ static bool uharddoom_translate_addr(UltimateHardDoomState *d, int which, uint32
 		pte_tag |= UHARDDOOM_TLB_TAG_KERNEL;
 		pde_tag |= UHARDDOOM_TLB_TAG_KERNEL;
 	}
+	d->tlb_client_va[which] = offset;
 	if (d->tlb_client_pte_tag[which] != pte_tag) {
 		/* No PTE, try the pool.  */
 		int pteidx = uharddoom_hash(pte_tag);
@@ -697,8 +698,13 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 				d->fe_regs[sdst] = 0;
 				break;
 			case UHARDDOOM_FE_STATE_STATE_CMD_FETCH:
-				if (uharddoom_cmd_fifo_empty(d))
+				if (uharddoom_cmd_fifo_empty(d)) {
+					if (d->enable & UHARDDOOM_ENABLE_CMD && !d->cmd_read_size) {
+						d->intr |= UHARDDOOM_INTR_CMD_ERROR;
+						d->enable &= ~UHARDDOOM_ENABLE_CMD;
+					}
 					return any;
+				}
 				if (sdst)
 					d->fe_regs[sdst] = d->cmd_fifo_data[d->cmd_fifo_get];
 				d->cmd_fe_ptr += 4;

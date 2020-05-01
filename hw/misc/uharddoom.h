@@ -375,6 +375,8 @@
 /* The per-client singular PTE TLBs.  */
 #define UHARDDOOM_TLB_CLIENT_PTE_TAG(i)			(0x0440 + (i) * 8)
 #define UHARDDOOM_TLB_CLIENT_PTE_VALUE(i)		(0x0444 + (i) * 8)
+/* The last translated virt address for each client (useful for page fault handling).  */
+#define UHARDDOOM_TLB_CLIENT_VA(i)			(0x0480 + (i) * 4)
 /* The PTE cache pool.  */
 #define UHARDDOOM_TLB_POOL_PTE_TAG(i)			(0x0600 + (i) * 8)
 #define UHARDDOOM_TLB_POOL_PTE_VALUE(i)			(0x0604 + (i) * 8)
