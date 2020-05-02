@@ -401,7 +401,8 @@
 #define UHARDDOOM_SRD_STATE_COL				0x00010000
 /* If 1, waiting on SRDSEM.  */
 #define UHARDDOOM_SRD_STATE_SRDSEM			0x10000000
-#define UHARDDOOM_SRD_STATE_MASK			0x1001ffff
+#define UHARDDOOM_SRD_STATE_FESEM			0x20000000
+#define UHARDDOOM_SRD_STATE_MASK			0x3001ffff
 /* The virtual base address of the source.  */
 #define UHARDDOOM_SRD_SRC_PTR				0x0a04
 /* The pitch of the source.  */
@@ -459,12 +460,11 @@
 #define UHARDDOOM_SWR_STATE_DST_BUF_FULL		0x00080000
 #define UHARDDOOM_SWR_STATE_TRANS_POS_MASK		0x07f00000
 #define UHARDDOOM_SWR_STATE_TRANS_POS_SHIFT		20
-/* If 1, pending FESEM, SRDSEM, COLSEM, SPANSEM.  */
-#define UHARDDOOM_SWR_STATE_FESEM			0x10000000
-#define UHARDDOOM_SWR_STATE_SRDSEM			0x20000000
-#define UHARDDOOM_SWR_STATE_COLSEM			0x40000000
-#define UHARDDOOM_SWR_STATE_SPANSEM			0x80000000
-#define UHARDDOOM_SWR_STATE_MASK			0xf7fff7ff
+/* If 1, pending SRDSEM, COLSEM, SPANSEM.  */
+#define UHARDDOOM_SWR_STATE_SRDSEM			0x10000000
+#define UHARDDOOM_SWR_STATE_COLSEM			0x20000000
+#define UHARDDOOM_SWR_STATE_SPANSEM			0x40000000
+#define UHARDDOOM_SWR_STATE_MASK			0x77fff7ff
 #define UHARDDOOM_SWR_TRANSMAP_PTR			0x0b04
 #define UHARDDOOM_SWR_DST_PTR				0x0b08
 #define UHARDDOOM_SWR_DST_PTR_MASK			0xffffffc0
@@ -585,6 +585,8 @@
 
 /* Section 3: Page tables.  */
 
+#define UHARDDOOM_PAGE_SIZE				0x1000
+#define UHARDDOOM_PAGE_SHIFT				12
 /* Page directory pointer.  */
 #define UHARDDOOM_PDP_MASK				0x0fffffff
 #define UHARDDOOM_PDP_SHIFT				12
@@ -827,7 +829,10 @@
 #define UHARDDOOM_SRDCMD_TYPE_SRC_PITCH			0x2
 /* Reads blocks.  */
 #define UHARDDOOM_SRDCMD_TYPE_READ			0x3
+/* Wait for a signal on SRDSEM.  */
 #define UHARDDOOM_SRDCMD_TYPE_SRDSEM			0x4
+/* Send a signal on FESEM.  */
+#define UHARDDOOM_SRDCMD_TYPE_FESEM			0x5
 #define UHARDDOOM_SRDCMD_DATA_READ(len, col)		((len) | (col) << 16)
 #define UHARDDOOM_SRDCMD_DATA_EXTR_READ_LENGTH(cmd)	((cmd) & 0xffff)
 /* If set, send blocks to COL, otherwise to FX.  */
@@ -949,14 +954,12 @@
 #define UHARDDOOM_SWRCMD_TYPE_DST_PITCH			0x3
 /* Draw blocks from COL or FX.  */
 #define UHARDDOOM_SWRCMD_TYPE_DRAW			0x4
-/* Send a signal on FESEM.  */
-#define UHARDDOOM_SWRCMD_TYPE_FESEM			0x5
 /* Send a signal on SRDSEM.  */
-#define UHARDDOOM_SWRCMD_TYPE_SRDSEM			0x6
+#define UHARDDOOM_SWRCMD_TYPE_SRDSEM			0x5
 /* Send a signal on COLSEM.  */
-#define UHARDDOOM_SWRCMD_TYPE_COLSEM			0x7
+#define UHARDDOOM_SWRCMD_TYPE_COLSEM			0x6
 /* Send a signal on SPANSEM.  */
-#define UHARDDOOM_SWRCMD_TYPE_SPANSEM			0x8
+#define UHARDDOOM_SWRCMD_TYPE_SPANSEM			0x7
 #define UHARDDOOM_SWRCMD_DATA_DRAW(len, c_en, t_en)	((len) | (c_en) << 16 | (t_en) << 17)
 #define UHARDDOOM_SWRCMD_DATA_EXTR_DRAW_LENGTH(cmd)	((cmd) & 0xffff)
 /* If set, draw from COL, otherwise from FX.  */

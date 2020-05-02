@@ -112,8 +112,8 @@ static void uharddoom_status_update(UltimateHardDoomState *d) {
 	/* FE busy iff in the running state.  */
 	if ((d->fe_state & UHARDDOOM_FE_STATE_STATE_MASK) == UHARDDOOM_FE_STATE_STATE_RUNNING)
 		d->status |= UHARDDOOM_STATUS_FE;
-	/* SRD busy iff waiting on SRDSEM or has non-0 pending read length.  */
-	if (d->srd_state & (UHARDDOOM_SRD_STATE_SRDSEM | UHARDDOOM_SRD_STATE_READ_LENGTH_MASK))
+	/* SRD busy iff waiting on SRDSEM/FESEM or has non-0 pending read length.  */
+	if (d->srd_state & (UHARDDOOM_SRD_STATE_SRDSEM | UHARDDOOM_SRD_STATE_FESEM | UHARDDOOM_SRD_STATE_READ_LENGTH_MASK))
 		d->status |= UHARDDOOM_STATUS_SRD;
 	/* SPAN busy iff waiting on SPANSEM or has non-0 pending draw length.  */
 	if (d->span_state & (UHARDDOOM_SPAN_STATE_SPANSEM | UHARDDOOM_SPAN_STATE_DRAW_LENGTH_MASK))
@@ -125,7 +125,7 @@ static void uharddoom_status_update(UltimateHardDoomState *d) {
 	if (d->fx_state & (UHARDDOOM_FX_STATE_DRAW_LENGTH_MASK | UHARDDOOM_FX_STATE_LOAD_MODE_MASK))
 		d->status |= UHARDDOOM_STATUS_FX;
 	/* SWR busy iff has non-0 pending draw length or has one of the SEM operations in progress.  */
-	if (d->swr_state & (UHARDDOOM_SWR_STATE_DRAW_LENGTH_MASK | UHARDDOOM_SWR_STATE_FESEM | UHARDDOOM_SWR_STATE_SRDSEM | UHARDDOOM_SWR_STATE_COLSEM | UHARDDOOM_SWR_STATE_SPANSEM))
+	if (d->swr_state & (UHARDDOOM_SWR_STATE_DRAW_LENGTH_MASK | UHARDDOOM_SWR_STATE_SRDSEM | UHARDDOOM_SWR_STATE_COLSEM | UHARDDOOM_SWR_STATE_SPANSEM))
 		d->status |= UHARDDOOM_STATUS_SWR;
 	if (!uharddoom_srdcmd_empty(d))
 		d->status |= UHARDDOOM_STATUS_FIFO_SRDCMD;
@@ -1220,6 +1220,12 @@ static bool uharddoom_run_srd(UltimateHardDoomState *d) {
 			d->srdsem = 0;
 			d->srd_state &= ~UHARDDOOM_SRD_STATE_SRDSEM;
 			any = true;
+		} else if (d->srd_state & UHARDDOOM_SRD_STATE_FESEM) {
+			if (d->fesem)
+				return any;
+			d->fesem = 1;
+			d->srd_state &= ~UHARDDOOM_SRD_STATE_FESEM;
+			any = true;
 		} else if (d->srd_state & UHARDDOOM_SRD_STATE_READ_LENGTH_MASK) {
 			uint8_t *ptr;
 			if (d->srd_state & UHARDDOOM_SRD_STATE_COL) {
@@ -1265,6 +1271,9 @@ static bool uharddoom_run_srd(UltimateHardDoomState *d) {
 					break;
 				case UHARDDOOM_SRDCMD_TYPE_SRDSEM:
 					d->srd_state |= UHARDDOOM_SRD_STATE_SRDSEM;
+					break;
+				case UHARDDOOM_SRDCMD_TYPE_FESEM:
+					d->srd_state |= UHARDDOOM_SRD_STATE_FESEM;
 					break;
 			}
 		}
@@ -1658,13 +1667,7 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 		return false;
 	bool any = false;
 	while (true) {
-		if (d->swr_state & UHARDDOOM_SWR_STATE_FESEM) {
-			if (d->fesem)
-				return any;
-			d->fesem = 1;
-			d->swr_state &= ~UHARDDOOM_SWR_STATE_FESEM;
-			any = true;
-		} else if (d->swr_state & UHARDDOOM_SWR_STATE_SRDSEM) {
+		if (d->swr_state & UHARDDOOM_SWR_STATE_SRDSEM) {
 			if (d->srdsem)
 				return any;
 			d->srdsem = 1;
@@ -1763,9 +1766,6 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_DRAW:
 					d->swr_state = data & (UHARDDOOM_SWR_STATE_DRAW_LENGTH_MASK | UHARDDOOM_SWR_STATE_COL_EN | UHARDDOOM_SWR_STATE_TRANS_EN);
-					break;
-				case UHARDDOOM_SWRCMD_TYPE_FESEM:
-					d->swr_state |= UHARDDOOM_SWR_STATE_FESEM;
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_SRDSEM:
 					d->swr_state |= UHARDDOOM_SWR_STATE_SRDSEM;
