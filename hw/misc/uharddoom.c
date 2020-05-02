@@ -261,15 +261,15 @@ static void uharddoom_reset_cache(UltimateHardDoomState *d, int which) {
 
 /* Reads a byte thru the CACHE, returns true if succeeded.  */
 static bool uharddoom_cache_read(UltimateHardDoomState *d, int which, uint32_t addr, uint8_t *dst, bool speculative) {
-	uint32_t set = uharddoom_hash(addr);
 	uint32_t offset = addr & UHARDDOOM_BLOCK_MASK;
 	uint32_t va = addr & ~UHARDDOOM_BLOCK_MASK;
+	uint32_t set = uharddoom_hash(va);
 	uint32_t tag = va | UHARDDOOM_CACHE_TAG_VALID;
 	if (d->cache_tag[which * UHARDDOOM_CACHE_SIZE + set] != tag) {
 		if (speculative)
 			return false;
 		uint64_t pa;
-		if (!uharddoom_translate_addr(d, which - 4, va, &pa, false))
+		if (!uharddoom_translate_addr(d, which + 4, va, &pa, false))
 			return false;
 		pci_dma_read(&d->dev, pa, &d->cache_data[(which * UHARDDOOM_CACHE_SIZE + set) * UHARDDOOM_BLOCK_SIZE], UHARDDOOM_BLOCK_SIZE);
 		d->cache_tag[which * UHARDDOOM_CACHE_SIZE + set] = tag;

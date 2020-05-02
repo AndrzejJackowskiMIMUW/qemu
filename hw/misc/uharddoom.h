@@ -699,7 +699,7 @@
 
 /* Draw columns.  */
 /* Word 0: command type, enables, number of columns.  */
-#define UHARDDOOM_USER_DRAW_COLUMNS_HEADER(cae, cbe, te, nc)	(UHARDDOOM_USER_CMD_TYPE_DRAW_COLUMNS | (cae) << 8 | (cbe) << 9 | (te) << 12, (nc) << 16)
+#define UHARDDOOM_USER_DRAW_COLUMNS_HEADER(cae, cbe, te, nc)	(UHARDDOOM_USER_CMD_TYPE_DRAW_COLUMNS | (cae) << 8 | (cbe) << 9 | (te) << 12 | (nc) << 16)
 #define UHARDDOOM_USER_DRAW_COLUMNS_HEADER_EXTR_CMAP_A_EN(w)	((w) >> 8 & 1)
 #define UHARDDOOM_USER_DRAW_COLUMNS_HEADER_EXTR_CMAP_B_EN(w)	((w) >> 9 & 1)
 #define UHARDDOOM_USER_DRAW_COLUMNS_HEADER_EXTR_TRANS_EN(w)	((w) >> 12 & 1)
