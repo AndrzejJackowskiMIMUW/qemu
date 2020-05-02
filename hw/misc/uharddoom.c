@@ -207,8 +207,8 @@ static uint32_t uharddoom_hash(uint32_t word) {
  * Returns true if succeeded.  */
 static bool uharddoom_translate_addr(UltimateHardDoomState *d, int which, uint32_t offset, uint64_t *res, bool need_write) {
 	uint8_t buf[4];
-	uint32_t pte_tag = offset & UHARDDOOM_TLB_TAG_MASK_PT;
-	uint32_t pde_tag = offset & UHARDDOOM_TLB_TAG_MASK_PD;
+	uint32_t pte_tag = offset & 0xfffff000;
+	uint32_t pde_tag = offset & 0xffc00000;
 	pte_tag |= UHARDDOOM_TLB_TAG_VALID;
 	pde_tag |= UHARDDOOM_TLB_TAG_VALID;
 	if (which == UHARDDOOM_TLB_CLIENT_BATCH) {

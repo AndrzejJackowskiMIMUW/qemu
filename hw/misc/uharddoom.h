@@ -602,7 +602,7 @@
 #define UHARDDOOM_PTE_PA_SHIFT				8
 #define UHARDDOOM_PTE_MASK				0xfffffff3
 /* Splits the VA into PDI + PTI + OFF */
-#define UHARDDOOM_VA_PDI(va)				((va) >> 20 & 0x3ff)
+#define UHARDDOOM_VA_PDI(va)				((va) >> 22 & 0x3ff)
 #define UHARDDOOM_VA_PTI(va)				((va) >> 12 & 0x3ff)
 #define UHARDDOOM_VA_OFF(va)				((va) & 0xfff)
 /* The parts of VA that are used for tagging PDE and PTE caches.  */
