@@ -80,7 +80,7 @@
 #define UHARDDOOM_RESET_FIFO_SPANOUT			0x10000000
 #define UHARDDOOM_RESET_FIFO_COLOUT			0x20000000
 #define UHARDDOOM_RESET_FIFO_FXOUT			0x40000000
-#define UHARDDOOM_RESET_ALL				0x7ffffffe
+#define UHARDDOOM_RESET_ALL				0x7f7ffffe
 /* Interrupt status.  */
 #define UHARDDOOM_INTR					0x0008
 #define UHARDDOOM_INTR_BATCH_WAIT			0x00000001
@@ -120,8 +120,8 @@
  *         JOB.wait()
  *         # Increment BATCH_GET, possibly wrapping
  *         BATCH_GET += 0x10
- *         if BATCH_GET == BATCH_WRAP:
- *             BATCH_GET = 0
+ *         if BATCH_GET == BATCH_WRAP_FROM:
+ *             BATCH_GET = BATCH_WRAP_TO
  *         # If we reached the interrupt value, trigger interrupt.
  *         if BATCH_GET == BATCH_WAIT:
  *             INTR |= INTR_BATCH_WAIT
@@ -130,18 +130,19 @@
 /* The kernel PD, used for fetching batch jobs.  Goes straight to
  * TLB_KERNEL_PD.  */
 #define UHARDDOOM_BATCH_PDP				0x0020
-/* If BATCH_GET would be equal to this value after incrementing, set it to 0
- * instead.  */
-#define UHARDDOOM_BATCH_WRAP				0x0024
 /* The current kernel vaddr that BATCH is reading batches from.  Must be
  * 0x10-byte aligned.  */
-#define UHARDDOOM_BATCH_GET				0x0028
+#define UHARDDOOM_BATCH_GET				0x0024
 /* Current end pointer — when BATCH_GET is equal to BATCH_PUT, BATCH will
  * halt until more data is available.  */
-#define UHARDDOOM_BATCH_PUT				0x002c
+#define UHARDDOOM_BATCH_PUT				0x0028
 /* Interrupt pointer — when BATCH_GET is incremented and reaches this value,
  * the BATCH_WAIT interrupt will be triggered.  */
-#define UHARDDOOM_BATCH_WAIT				0x0030
+#define UHARDDOOM_BATCH_WAIT				0x002c
+/* If BATCH_GET would be equal to this value after incrementing, set it to WRAP_TO
+ * instead.  */
+#define UHARDDOOM_BATCH_WRAP_FROM			0x0030
+#define UHARDDOOM_BATCH_WRAP_TO				0x0034
 #define UHARDDOOM_BATCH_PTR_MASK			0xfffffff0
 #define UHARDDOOM_BATCH_JOB_SIZE			0x10
 
@@ -272,11 +273,11 @@
 /* Unaligned dst pitch.  Data A is cmd pointer, data B is dst pitch.  */
 #define UHARDDOOM_FE_ERROR_CODE_DST_PITCH_UNALIGNED	0x00000002
 /* Unaligned colormap pointer.  Data A is cmd pointer, data B is colormap pointer.  */
-#define UHARDDOOM_FE_ERROR_COLORMAP_UNALIGNED		0x00000003
+#define UHARDDOOM_FE_ERROR_CODE_COLORMAP_UNALIGNED	0x00000003
 /* Y coordinates for DRAW_COLUMNS in wrong order.  Data A is cmd pointer, data B is command word.  */
-#define UHARDDOOM_FE_ERROR_DRAW_COLUMNS_Y_REV		0x00000004
+#define UHARDDOOM_FE_ERROR_CODE_DRAW_COLUMNS_Y_REV	0x00000004
 /* X coordinates for DRAW_SPANS in wrong order.  Data A is cmd pointer, data B is command word.  */
-#define UHARDDOOM_FE_ERROR_DRAW_SPANS_X_REV		0x00000005
+#define UHARDDOOM_FE_ERROR_CODE_DRAW_SPANS_X_REV	0x00000005
 /* The FE core encountered an illegal instruction.  A is address, B is
  * the instruction opcode.  */
 #define UHARDDOOM_FE_ERROR_CODE_ILLEGAL_INSTRUCTION	0x00000080
@@ -302,27 +303,27 @@
 #define UHARDDOOM_FIFO_SRDCMD_PUT			0x0204
 #define UHARDDOOM_FIFO_SRDCMD_CMD_WINDOW		0x0208
 #define UHARDDOOM_FIFO_SRDCMD_DATA_WINDOW		0x020c
-#define UHARDDOOM_FIFO_SRDCMD_SIZE			0x40
+#define UHARDDOOM_FIFO_SRDCMD_SIZE			0x400
 #define UHARDDOOM_FIFO_SPANCMD_GET			0x0210
 #define UHARDDOOM_FIFO_SPANCMD_PUT			0x0214
 #define UHARDDOOM_FIFO_SPANCMD_CMD_WINDOW		0x0218
 #define UHARDDOOM_FIFO_SPANCMD_DATA_WINDOW		0x021c
-#define UHARDDOOM_FIFO_SPANCMD_SIZE			0x40
+#define UHARDDOOM_FIFO_SPANCMD_SIZE			0x400
 #define UHARDDOOM_FIFO_COLCMD_GET			0x0220
 #define UHARDDOOM_FIFO_COLCMD_PUT			0x0224
 #define UHARDDOOM_FIFO_COLCMD_CMD_WINDOW		0x0228
 #define UHARDDOOM_FIFO_COLCMD_DATA_WINDOW		0x022c
-#define UHARDDOOM_FIFO_COLCMD_SIZE			0x40
+#define UHARDDOOM_FIFO_COLCMD_SIZE			0x400
 #define UHARDDOOM_FIFO_FXCMD_GET			0x0230
 #define UHARDDOOM_FIFO_FXCMD_PUT			0x0234
 #define UHARDDOOM_FIFO_FXCMD_CMD_WINDOW			0x0238
 #define UHARDDOOM_FIFO_FXCMD_DATA_WINDOW		0x023c
-#define UHARDDOOM_FIFO_FXCMD_SIZE			0x40
+#define UHARDDOOM_FIFO_FXCMD_SIZE			0x400
 #define UHARDDOOM_FIFO_SWRCMD_GET			0x0240
 #define UHARDDOOM_FIFO_SWRCMD_PUT			0x0244
 #define UHARDDOOM_FIFO_SWRCMD_CMD_WINDOW		0x0248
 #define UHARDDOOM_FIFO_SWRCMD_DATA_WINDOW		0x024c
-#define UHARDDOOM_FIFO_SWRCMD_SIZE			0x40
+#define UHARDDOOM_FIFO_SWRCMD_SIZE			0x400
 #define UHARDDOOM_FIFO_CMD_MASK				0x0000000f
 /* The 4 semaphore registers.  Bumped by one by SWR commands, decreased by FE/SRD/SPAN/COL.  */
 #define UHARDDOOM_FIFO_FESEM				0x0250
@@ -546,20 +547,21 @@
 #define UHARDDOOM_COL_COLS_SRC_PITCH(i)			(0x2300 + (i) * 4)
 #define UHARDDOOM_COL_COLS_USTART(i)			(0x2400 + (i) * 4)
 #define UHARDDOOM_COL_COLS_USTEP(i)			(0x2500 + (i) * 4)
-#define UHARDDOOM_COL_COLS_STATE(i)			(0x2600 + (i) * 4)
-#define UHARDDOOM_COL_COLS_STATE_DATA_CMAP_MASK		0x0000007f
-#define UHARDDOOM_COL_COLS_STATE_DATA_CMAP_SHIFT	0
-#define UHARDDOOM_COL_COLS_STATE_ULOG_MASK		0x00001f00
-#define UHARDDOOM_COL_COLS_STATE_COL_EN			0x00002000
-#define UHARDDOOM_COL_COLS_STATE_CMAP_B_EN		0x00004000
+#define UHARDDOOM_COL_COLS_SRC_HEIGHT(i)		(0x2600 + (i) * 4)
+#define UHARDDOOM_COL_COLS_SRC_HEIGHT_MASK		0x0000ffff
+#define UHARDDOOM_COL_COLS_STATE(i)			(0x2700 + (i) * 4)
+#define UHARDDOOM_COL_COLS_STATE_COL_EN			0x00000001
+#define UHARDDOOM_COL_COLS_STATE_CMAP_B_EN		0x00000002
+#define UHARDDOOM_COL_COLS_STATE_DATA_CMAP_MASK		0x00003f00
+#define UHARDDOOM_COL_COLS_STATE_DATA_CMAP_SHIFT	8
 #define UHARDDOOM_COL_COLS_STATE_DATA_GET_MASK		0x003f0000
 #define UHARDDOOM_COL_COLS_STATE_DATA_GET_SHIFT		16
 #define UHARDDOOM_COL_COLS_STATE_DATA_PUT_MASK		0x3f000000
 #define UHARDDOOM_COL_COLS_STATE_DATA_PUT_SHIFT		24
 
-#define UHARDDOOM_COL_COLS_STATE_MASK			0x3f3f7f3f
+#define UHARDDOOM_COL_COLS_STATE_MASK			0x3f3f3f03
 /* The CMAP_A data (256 bytes).  */
-#define UHARDDOOM_COL_CMAP_A(i)				(0x2700 + (i))
+#define UHARDDOOM_COL_CMAP_A(i)				(0x2800 + (i))
 /* The pre-textured data.  64 bytes for each lane.  */
 #define UHARDDOOM_COL_DATA(i)				(0x3000 + (i))
 #define UHARDDOOM_COL_DATA_SIZE				64
@@ -709,10 +711,10 @@
 /* Word 3 (if enabled in header): colormap A address.  */
 /* Word 4 (if enabled in header): transmap address.  */
 /* The following 5 or 6 words are repeated once for every column.  */
-/* Repeat word 0: x, U mask.  */
+/* Repeat word 0: x, texture height.  */
 #define UHARDDOOM_USER_DRAW_COLUMNS_WR0(x, ulog)	((x) | (ulog) << 16)
 #define UHARDDOOM_USER_DRAW_COLUMNS_WR0_EXTR_X(w)	((w) & 0xffff)
-#define UHARDDOOM_USER_DRAW_COLUMNS_WR0_EXTR_ULOG(w)	((w) >> 16 & 0x1f)
+#define UHARDDOOM_USER_DRAW_COLUMNS_WR0_EXTR_SRC_HEIGHT(w)	((w) >> 16 & 0xffff)
 /* Repeat word 1: y0 and y1.  */
 #define UHARDDOOM_USER_DRAW_COLUMNS_WR1(y0, y1)		((y0) | (y1) << 16)
 #define UHARDDOOM_USER_DRAW_COLUMNS_WR1_EXTR_Y0(w)	((w) & 0xffff)
@@ -886,16 +888,16 @@
 #define UHARDDOOM_COLCMD_TYPE_DRAW			0x8
 /* Waits for a signal from SWR on the COLSEM interface, then flushes cache.  */
 #define UHARDDOOM_COLCMD_TYPE_COLSEM			0x9
-#define UHARDDOOM_COLCMD_DATA_COL_SETUP(x, ulog, col_en, cmap_b_en)	((x) | (ulog) << 8 | (col_en) << 13 | (cmap_b_en) << 14)
+#define UHARDDOOM_COLCMD_DATA_COL_SETUP(x, col_en, cmap_b_en, height)	((x) | (col_en) << 8 | (cmap_b_en) << 9 | (height) << 16)
 /* The column X coord in the block.  */
 #define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_X(cmd)	((cmd) & 0x3f)
-/* U coord mask.  */
-#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_ULOG(cmd)	((cmd) >> 8 & 0x1f)
 /* Column enable — if unset, this column will be disabled and skipped in
  * blocks sent to SWR.  */
-#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_COL_EN(cmd)	((cmd) >> 13 & 1)
+#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_COL_EN(cmd)	((cmd) >> 8 & 1)
 /* Colormap B enable.  */
-#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_CMAP_B_EN(cmd)	((cmd) >> 14 & 1)
+#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_CMAP_B_EN(cmd)	((cmd) >> 9 & 1)
+/* U coord mask.  */
+#define UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_SRC_HEIGHT(cmd)	((cmd) >> 16 & 0xffff)
 /* If enabled, U is mapped to y coord within the source (ie. multiplied by
  * source pitch), otherwise x.  */
 #define UHARDDOOM_COLCMD_DATA_DRAW(len, cmap_a_en)	((len) | (cmap_a_en) << 16)

@@ -275,6 +275,7 @@ static bool uharddoom_cache_read(UltimateHardDoomState *d, int which, uint32_t a
 		d->cache_tag[which * UHARDDOOM_CACHE_SIZE + set] = tag;
 	}
 	*dst = d->cache_data[(which * UHARDDOOM_CACHE_SIZE + set) * UHARDDOOM_BLOCK_SIZE + offset];
+	//printf("CACHE READ %d %08x -> %02x\n", which, addr, *dst);
 	return true;
 }
 
@@ -369,8 +370,8 @@ static void uharddoom_job_done(UltimateHardDoomState *d) {
 	d->intr |= UHARDDOOM_INTR_JOB_DONE;
 	if (d->job_state & UHARDDOOM_JOB_STATE_FROM_BATCH) {
 		d->batch_get += UHARDDOOM_BATCH_JOB_SIZE;
-		if (d->batch_get == d->batch_wrap)
-			d->batch_get = 0;
+		if (d->batch_get == d->batch_wrap_from)
+			d->batch_get = d->batch_wrap_to;
 		if (d->batch_get == d->batch_wait)
 			d->intr |= UHARDDOOM_INTR_BATCH_WAIT;
 	}
@@ -675,6 +676,7 @@ static void uharddoom_fe_error(UltimateHardDoomState *d, uint32_t code, uint32_t
 	d->fe_error_data_b = data_b;
 	d->fe_state &= ~UHARDDOOM_FE_STATE_STATE_MASK;
 	d->fe_state |= UHARDDOOM_FE_STATE_STATE_ERROR;
+	d->intr |= UHARDDOOM_INTR_FE_ERROR;
 }
 
 /* Runs the FE for some time.  Returns true if anything has been done.  */
@@ -901,6 +903,7 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 							d->fe_error_code = val;
 							d->fe_state &= ~UHARDDOOM_FE_STATE_STATE_MASK;
 							d->fe_state |= UHARDDOOM_FE_STATE_STATE_ERROR;
+							d->intr |= UHARDDOOM_INTR_FE_ERROR;
 						}
 						else if ((addr & ~0x3c) == UHARDDOOM_FEMEM_SRDCMD(0)) {
 							state = UHARDDOOM_FE_STATE_STATE_SRDCMD;
@@ -1301,7 +1304,7 @@ static bool uharddoom_run_span(UltimateHardDoomState *d) {
 				uint32_t ui = d->span_ustart >> 16 & ((1u << UHARDDOOM_SPANCMD_DATA_EXTR_UVMASK_ULOG(d->span_uvmask)) - 1);
 				uint32_t vi = d->span_vstart >> 16 & ((1u << UHARDDOOM_SPANCMD_DATA_EXTR_UVMASK_VLOG(d->span_uvmask)) - 1);
 				uint32_t addr = d->span_src_ptr + ui + d->span_src_pitch * vi;
-				uint8_t *dst = &d->spanout_data[d->spanout_get * UHARDDOOM_BLOCK_SIZE + xoff];
+				uint8_t *dst = &d->spanout_data[d->spanout_put * UHARDDOOM_BLOCK_SIZE + xoff];
 				if (!uharddoom_cache_read(d, UHARDDOOM_CACHE_CLIENT_SPAN_SRC, addr, dst, false)) {
 					d->enable &= ~UHARDDOOM_ENABLE_SPAN;
 					d->span_state &= ~UHARDDOOM_SPAN_STATE_DRAW_XOFF_MASK;
@@ -1404,7 +1407,9 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 					if (get == cmap) {
 						if (cmap == put) {
 							while (true) {
-								uint32_t ui = d->col_cols_ustart[xoff] >> 16 & ((1u << UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_ULOG(d->col_cols_state[xoff])) - 1);
+								uint32_t ui = d->col_cols_ustart[xoff] >> 16;
+								if (d->col_cols_src_height[xoff])
+									ui %= d->col_cols_src_height[xoff];
 								uint32_t addr = d->col_cols_src_ptr[xoff] + d->col_cols_src_pitch[xoff] * ui;
 								uint8_t *dst = &d->col_data[xoff * UHARDDOOM_COL_DATA_SIZE + put];
 								bool spec = cmap != put;
@@ -1420,6 +1425,8 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 									*dst = d->col_cmap_a[*dst];
 								}
 								d->col_cols_ustart[xoff] += d->col_cols_ustep[xoff];
+								if (d->col_cols_src_height[xoff])
+									d->col_cols_ustart[xoff] %= d->col_cols_src_height[xoff] << 16;
 								put++;
 								put %= UHARDDOOM_COL_DATA_SIZE;
 								d->col_cols_state[xoff] &= ~UHARDDOOM_COL_COLS_STATE_DATA_PUT_MASK;
@@ -1505,7 +1512,12 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 				case UHARDDOOM_COLCMD_TYPE_COL_SETUP:
 					{
 					int which = UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_X(data);
-					d->col_cols_state[which] = data & (UHARDDOOM_COL_COLS_STATE_ULOG_MASK | UHARDDOOM_COL_COLS_STATE_COL_EN | UHARDDOOM_COL_COLS_STATE_CMAP_B_EN);
+					d->col_cols_state[which] = 0;
+					if (UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_COL_EN(data))
+						d->col_cols_state[which] |= UHARDDOOM_COL_COLS_STATE_COL_EN;
+					if (UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_CMAP_B_EN(data))
+						d->col_cols_state[which] |= UHARDDOOM_COL_COLS_STATE_CMAP_B_EN;
+					d->col_cols_src_height[which] = UHARDDOOM_COLCMD_DATA_EXTR_COL_SETUP_SRC_HEIGHT(data);
 					d->col_cols_cmap_b_ptr[which] = d->col_stage_cmap_b_ptr;
 					d->col_cols_src_ptr[which] = d->col_stage_src_ptr;
 					d->col_cols_src_pitch[which] = d->col_stage_src_pitch;
@@ -1614,6 +1626,12 @@ static bool uharddoom_run_fx(UltimateHardDoomState *d) {
 			}
 			d->fxout_mask[d->fxout_put] = mask;
 			uharddoom_fxout_write(d);
+			if (d->fx_state & UHARDDOOM_FX_STATE_DRAW_FUZZ_EN) {
+				pos[0]++;
+				pos[0] %= 4;
+				d->fx_state &= ~UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_MASK;
+				d->fx_state |= pos[0] << UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_SHIFT;
+			}
 			d->fx_state |= UHARDDOOM_FX_STATE_DRAW_NON_FIRST;
 			d->fx_state &= ~UHARDDOOM_FX_STATE_DRAW_FETCH_DONE;
 			any = true;
@@ -1719,7 +1737,7 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 			while (pos < UHARDDOOM_BLOCK_SIZE) {
 				if (d->swr_block_mask & 1ull << pos) {
 					if (d->swr_state & UHARDDOOM_SWR_STATE_TRANS_EN) {
-						uint32_t idx = d->swr_src_buf[pos] << 8 | d->swr_dst_buf[pos];
+						uint32_t idx = d->swr_dst_buf[pos] << 8 | d->swr_src_buf[pos];
 						uint32_t addr = idx + d->swr_transmap_ptr;
 						if (!uharddoom_cache_read(d, UHARDDOOM_CACHE_CLIENT_SWR_TRANSMAP, addr, &d->swr_trans_buf[pos], false)) {
 							d->enable &= ~UHARDDOOM_ENABLE_SWR;
