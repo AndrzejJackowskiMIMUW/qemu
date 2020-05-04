@@ -657,7 +657,7 @@
 /* Word 0: command type and source UV mask.  */
 #define UHARDDOOM_USER_BLIT_HEADER(ulog, vlog)		(UHARDDOOM_USER_CMD_TYPE_BLIT | (ulog) << 16 | (vlog) << 24)
 #define UHARDDOOM_USER_BLIT_HEADER_EXTR_ULOG(w)		((w) >> 16 & 0x1f)
-#define UHARDDOOM_USER_BLIT_HEADER_EXTR_VLOG(w)		((w) >> 16 & 0x1f)
+#define UHARDDOOM_USER_BLIT_HEADER_EXTR_VLOG(w)		((w) >> 24 & 0x1f)
 /* Word 1: destination pointer.  */
 /* Word 2: destination pitch.  */
 /* Word 3: X and Y coords of the destination left upper corner.  */
