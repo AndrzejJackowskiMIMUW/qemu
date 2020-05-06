@@ -180,6 +180,10 @@ static void uharddoom_reset_tlb(UltimateHardDoomState *d, int which) {
 			continue;
 		d->tlb_pool_pte_tag[i] &= ~UHARDDOOM_TLB_TAG_VALID;
 	}
+	if (which == 0)
+		d->stats[UHARDDOOM_STAT_TLB_KERNEL_FLUSH]++;
+	else
+		d->stats[UHARDDOOM_STAT_TLB_USER_FLUSH]++;
 }
 
 /* Sets the given PD and flushes corresponding TLB.  */
@@ -220,6 +224,7 @@ static bool uharddoom_translate_addr(UltimateHardDoomState *d, int which, uint32
 		/* No PTE, try the pool.  */
 		int pteidx = uharddoom_hash(pte_tag);
 		if (d->tlb_pool_pte_tag[pteidx] != pte_tag) {
+			d->stats[UHARDDOOM_STAT_TLB_MISS(which)]++;
 			/* Will need to fetch PTE.  First, get PDE.  */
 			int pdeidx = which != UHARDDOOM_TLB_CLIENT_BATCH;
 			if (d->tlb_pool_pde_tag[pdeidx] != pde_tag) {
@@ -229,6 +234,15 @@ static bool uharddoom_translate_addr(UltimateHardDoomState *d, int which, uint32
 				pci_dma_read(&d->dev, pde_addr, &buf, sizeof buf);
 				d->tlb_pool_pde_tag[pdeidx] = pde_tag;
 				d->tlb_pool_pde_value[pdeidx] = le32_read(buf);
+				if (which == UHARDDOOM_TLB_CLIENT_BATCH)
+					d->stats[UHARDDOOM_STAT_TLB_KERNEL_PDE_MISS]++;
+				else
+					d->stats[UHARDDOOM_STAT_TLB_USER_PDE_MISS]++;
+			} else {
+				if (which == UHARDDOOM_TLB_CLIENT_BATCH)
+					d->stats[UHARDDOOM_STAT_TLB_KERNEL_PDE_HIT]++;
+				else
+					d->stats[UHARDDOOM_STAT_TLB_USER_PDE_HIT]++;
 			}
 			uint32_t pde = d->tlb_pool_pde_value[pdeidx];
 			if (!(pde & UHARDDOOM_PDE_PRESENT))
@@ -237,9 +251,13 @@ static bool uharddoom_translate_addr(UltimateHardDoomState *d, int which, uint32
 			pci_dma_read(&d->dev, pte_addr, &buf, sizeof buf);
 			d->tlb_pool_pte_tag[pteidx] = pte_tag;
 			d->tlb_pool_pte_value[pteidx] = le32_read(buf);
+		} else {
+			d->stats[UHARDDOOM_STAT_TLB_POOL_HIT(which)]++;
 		}
 		d->tlb_client_pte_tag[which] = pte_tag;
 		d->tlb_client_pte_value[which] = d->tlb_pool_pte_value[pteidx];
+	} else {
+		d->stats[UHARDDOOM_STAT_TLB_HIT(which)]++;
 	}
 	uint32_t pte = d->tlb_client_pte_value[which];
 	if (!(pte & UHARDDOOM_PTE_PRESENT))
@@ -257,6 +275,7 @@ oops:
 static void uharddoom_reset_cache(UltimateHardDoomState *d, int which) {
 	for (int i = 0; i < UHARDDOOM_CACHE_SIZE; i++)
 		d->cache_tag[which * UHARDDOOM_CACHE_SIZE + i] &= ~UHARDDOOM_CACHE_TAG_VALID;
+	d->stats[UHARDDOOM_STAT_CACHE_FLUSH(which)]++;
 }
 
 /* Reads a byte thru the CACHE, returns true if succeeded.  */
@@ -266,13 +285,21 @@ static bool uharddoom_cache_read(UltimateHardDoomState *d, int which, uint32_t a
 	uint32_t set = uharddoom_hash(va);
 	uint32_t tag = va | UHARDDOOM_CACHE_TAG_VALID;
 	if (d->cache_tag[which * UHARDDOOM_CACHE_SIZE + set] != tag) {
-		if (speculative)
+		if (speculative) {
+			d->stats[UHARDDOOM_STAT_CACHE_SPEC_MISS(which)]++;
 			return false;
+		}
 		uint64_t pa;
 		if (!uharddoom_translate_addr(d, which + 4, va, &pa, false))
 			return false;
 		pci_dma_read(&d->dev, pa, &d->cache_data[(which * UHARDDOOM_CACHE_SIZE + set) * UHARDDOOM_BLOCK_SIZE], UHARDDOOM_BLOCK_SIZE);
 		d->cache_tag[which * UHARDDOOM_CACHE_SIZE + set] = tag;
+		d->stats[UHARDDOOM_STAT_CACHE_MISS(which)]++;
+	} else {
+		if (speculative)
+			d->stats[UHARDDOOM_STAT_CACHE_SPEC_HIT(which)]++;
+		else
+			d->stats[UHARDDOOM_STAT_CACHE_HIT(which)]++;
 	}
 	*dst = d->cache_data[(which * UHARDDOOM_CACHE_SIZE + set) * UHARDDOOM_BLOCK_SIZE + offset];
 	//printf("CACHE READ %d %08x -> %02x\n", which, addr, *dst);
@@ -372,8 +399,10 @@ static void uharddoom_job_done(UltimateHardDoomState *d) {
 		d->batch_get += UHARDDOOM_BATCH_JOB_SIZE;
 		if (d->batch_get == d->batch_wrap_from)
 			d->batch_get = d->batch_wrap_to;
-		if (d->batch_get == d->batch_wait)
+		if (d->batch_get == d->batch_wait) {
 			d->intr |= UHARDDOOM_INTR_BATCH_WAIT;
+			d->stats[UHARDDOOM_STAT_BATCH_WAIT]++;
+		}
 	}
 }
 
@@ -542,6 +571,7 @@ static uint64_t uharddoom_mmio_read(void *opaque, hwaddr addr, unsigned size) {
 	} else {
 		fprintf(stderr, "uharddoom error: invalid register read of size %u at %03x\n", size, (int)addr);
 	}
+	d->stats[UHARDDOOM_STAT_MMIO_READ]++;
 	uharddoom_status_update(d);
 	qemu_cond_signal(&d->cond);
 	qemu_mutex_unlock(&d->mutex);
@@ -560,6 +590,7 @@ static void uharddoom_mmio_write(void *opaque, hwaddr addr, uint64_t val,
 	} else {
 		fprintf(stderr, "uharddoom error: invalid register write of size %u at %03x\n", size, (int)addr);
 	}
+	d->stats[UHARDDOOM_STAT_MMIO_WRITE]++;
 	uharddoom_status_update(d);
 	qemu_cond_signal(&d->cond);
 	qemu_mutex_unlock(&d->mutex);
@@ -656,6 +687,7 @@ static bool uharddoom_run_cmd(UltimateHardDoomState *d) {
 	if (rsz > to_page_end)
 		rsz = to_page_end;
 	pci_dma_read(&d->dev, pa, &buf, rsz);
+	d->stats[UHARDDOOM_STAT_CMD_BLOCK]++;
 	uint32_t pos = 0;
 	while (pos < rsz) {
 		uint32_t word = le32_read(buf + pos);
@@ -664,6 +696,7 @@ static bool uharddoom_run_cmd(UltimateHardDoomState *d) {
 		d->cmd_read_ptr += 4;
 		d->cmd_read_size -= 4;
 		pos += 4;
+		d->stats[UHARDDOOM_STAT_CMD_WORD]++;
 		if (uharddoom_cmd_fifo_full(d))
 			return true;
 	}
@@ -763,6 +796,7 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 			return any;
 			
 		}
+		d->stats[UHARDDOOM_STAT_FE_INSN]++;
 		uint32_t new_pc = d->fe_pc + 4;
 		uint32_t insn = le32_read(d->fe_code + (d->fe_pc - UHARDDOOM_FEMEM_CODE_BASE));
 		uint32_t op = insn & 0x7f;
@@ -786,6 +820,7 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 				/* LOAD */
 				uint32_t addr = d->fe_regs[rs1] + imm_i;
 				uint32_t r;
+				d->stats[UHARDDOOM_STAT_FE_LOAD]++;
 				switch (f3) {
 					case 0:
 						/* LB */
@@ -869,6 +904,7 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 				uint32_t addr = d->fe_regs[rs1] + imm_s;
 				uint32_t val = d->fe_regs[rs2];
 				uint32_t cmd = addr >> 2 & UHARDDOOM_FIFO_CMD_MASK;
+				d->stats[UHARDDOOM_STAT_FE_STORE]++;
 				switch (f3) {
 					case 0:
 						/* SB */
@@ -924,6 +960,9 @@ static bool uharddoom_run_fe(UltimateHardDoomState *d) {
 						else if ((addr & ~0x3c) == UHARDDOOM_FEMEM_SWRCMD(0)) {
 							state = UHARDDOOM_FE_STATE_STATE_SWRCMD;
 							goto long_store;
+						}
+						else if ((addr & ~0x7c) == UHARDDOOM_FEMEM_STAT_BUMP(0)) {
+							d->stats[addr >> 2 & 0x1f] += val;
 						}
 						else if (addr == UHARDDOOM_FEMEM_JOB_DONE)
 							uharddoom_job_done(d);
@@ -1252,6 +1291,7 @@ static bool uharddoom_run_srd(UltimateHardDoomState *d) {
 				uharddoom_fxin_write(d);
 			d->srd_src_ptr += d->srd_src_pitch;
 			d->srd_state--;
+			d->stats[UHARDDOOM_STAT_SRD_BLOCK]++;
 			any = true;
 		} else {
 			/* No command. get one.  */
@@ -1261,6 +1301,7 @@ static bool uharddoom_run_srd(UltimateHardDoomState *d) {
 			uint32_t data = d->srdcmd_data[d->srdcmd_get];
 			uharddoom_srdcmd_read(d);
 			//printf("SRDCMD %08x %08x\n", cmd, data);
+			d->stats[UHARDDOOM_STAT_SRD_CMD]++;
 			any = true;
 			switch (cmd) {
 				case UHARDDOOM_SRDCMD_TYPE_SRC_PTR:
@@ -1270,12 +1311,14 @@ static bool uharddoom_run_srd(UltimateHardDoomState *d) {
 					d->srd_src_pitch = data & UHARDDOOM_BLOCK_PITCH_MASK;
 					break;
 				case UHARDDOOM_SRDCMD_TYPE_READ:
+					d->stats[UHARDDOOM_STAT_SRD_READ]++;
 					d->srd_state = data & (UHARDDOOM_SRD_STATE_READ_LENGTH_MASK | UHARDDOOM_SRD_STATE_COL);
 					break;
 				case UHARDDOOM_SRDCMD_TYPE_SRDSEM:
 					d->srd_state |= UHARDDOOM_SRD_STATE_SRDSEM;
 					break;
 				case UHARDDOOM_SRDCMD_TYPE_FESEM:
+					d->stats[UHARDDOOM_STAT_SRD_FESEM]++;
 					d->srd_state |= UHARDDOOM_SRD_STATE_FESEM;
 					break;
 			}
@@ -1315,9 +1358,11 @@ static bool uharddoom_run_span(UltimateHardDoomState *d) {
 				d->span_vstart += d->span_vstep;
 				xoff++;
 				d->span_state--;
+				d->stats[UHARDDOOM_STAT_SPAN_PIXEL]++;
 				any = true;
 				if (xoff == UHARDDOOM_BLOCK_SIZE || !(d->span_state & UHARDDOOM_SPAN_STATE_DRAW_LENGTH_MASK)) {
 					uharddoom_spanout_write(d);
+					d->stats[UHARDDOOM_STAT_SPAN_BLOCK]++;
 					xoff = 0;
 					break;
 				}
@@ -1332,6 +1377,7 @@ static bool uharddoom_run_span(UltimateHardDoomState *d) {
 			uint32_t data = d->spancmd_data[d->spancmd_get];
 			uharddoom_spancmd_read(d);
 			//printf("SPANCMD %08x %08x\n", cmd, data);
+			d->stats[UHARDDOOM_STAT_SPAN_CMD]++;
 			any = true;
 			switch (cmd) {
 				case UHARDDOOM_SPANCMD_TYPE_SRC_PTR:
@@ -1356,6 +1402,7 @@ static bool uharddoom_run_span(UltimateHardDoomState *d) {
 					d->span_vstep = data;
 					break;
 				case UHARDDOOM_SPANCMD_TYPE_DRAW:
+					d->stats[UHARDDOOM_STAT_SPAN_DRAW]++;
 					d->span_state = data & (UHARDDOOM_SPAN_STATE_DRAW_LENGTH_MASK | UHARDDOOM_SPAN_STATE_DRAW_XOFF_MASK);
 					break;
 				case UHARDDOOM_SPANCMD_TYPE_SPANSEM:
@@ -1468,6 +1515,9 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 					get %= UHARDDOOM_COL_DATA_SIZE;
 					d->col_cols_state[xoff] &= ~UHARDDOOM_COL_COLS_STATE_DATA_GET_MASK;
 					d->col_cols_state[xoff] |= get << UHARDDOOM_COL_COLS_STATE_DATA_GET_SHIFT;
+					d->stats[UHARDDOOM_STAT_COL_PIXEL]++;
+					if (d->col_cols_state[xoff] & UHARDDOOM_COL_COLS_STATE_CMAP_B_EN)
+						d->stats[UHARDDOOM_STAT_COL_PIXEL_CMAP_B]++;
 				}
 				xoff++;
 				any = true;
@@ -1480,6 +1530,9 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 							mask |= 1ull << i;
 					d->colout_mask[d->colout_put] = mask;
 					uharddoom_colout_write(d);
+					d->stats[UHARDDOOM_STAT_COL_BLOCK]++;
+					if (d->col_state & UHARDDOOM_COL_STATE_CMAP_A_EN)
+						d->stats[UHARDDOOM_STAT_COL_BLOCK_CMAP_A]++;
 					d->col_state--;
 					break;
 				}
@@ -1492,6 +1545,7 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 			uint32_t data = d->colcmd_data[d->colcmd_get];
 			uharddoom_colcmd_read(d);
 			//printf("COLCMD %08x %08x\n", cmd, data);
+			d->stats[UHARDDOOM_STAT_COL_CMD]++;
 			any = true;
 			switch (cmd) {
 				case UHARDDOOM_COLCMD_TYPE_COL_CMAP_B_PTR:
@@ -1526,10 +1580,14 @@ static bool uharddoom_run_col(UltimateHardDoomState *d) {
 					}
 					break;
 				case UHARDDOOM_COLCMD_TYPE_LOAD_CMAP_A:
+					d->stats[UHARDDOOM_STAT_COL_LOAD_CMAP_A]++;
 					d->col_state |= UHARDDOOM_COL_STATE_LOAD_CMAP_A;
 					d->col_state &= ~0xc0000000;
 					break;
 				case UHARDDOOM_COLCMD_TYPE_DRAW:
+					d->stats[UHARDDOOM_STAT_COL_DRAW]++;
+					if (data & UHARDDOOM_COL_STATE_CMAP_A_EN)
+						d->stats[UHARDDOOM_STAT_COL_DRAW_CMAP_A]++;
 					d->col_state = data & (UHARDDOOM_COL_STATE_DRAW_LENGTH_MASK | UHARDDOOM_COL_STATE_CMAP_A_EN);
 					break;
 				case UHARDDOOM_COLCMD_TYPE_COLSEM:
@@ -1626,11 +1684,15 @@ static bool uharddoom_run_fx(UltimateHardDoomState *d) {
 			}
 			d->fxout_mask[d->fxout_put] = mask;
 			uharddoom_fxout_write(d);
+			d->stats[UHARDDOOM_STAT_FX_BLOCK]++;
 			if (d->fx_state & UHARDDOOM_FX_STATE_DRAW_FUZZ_EN) {
 				pos[0]++;
 				pos[0] %= 4;
 				d->fx_state &= ~UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_MASK;
 				d->fx_state |= pos[0] << UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_SHIFT;
+				d->stats[UHARDDOOM_STAT_FX_BLOCK_FUZZ]++;
+			} else if (d->fx_state & UHARDDOOM_FX_STATE_DRAW_CMAP_EN) {
+				d->stats[UHARDDOOM_STAT_FX_BLOCK_CMAP]++;
 			}
 			d->fx_state |= UHARDDOOM_FX_STATE_DRAW_NON_FIRST;
 			d->fx_state &= ~UHARDDOOM_FX_STATE_DRAW_FETCH_DONE;
@@ -1642,9 +1704,11 @@ static bool uharddoom_run_fx(UltimateHardDoomState *d) {
 			uint32_t data = d->fxcmd_data[d->fxcmd_get];
 			uharddoom_fxcmd_read(d);
 			//printf("FXCMD %08x %08x\n", cmd, data);
+			d->stats[UHARDDOOM_STAT_FX_CMD]++;
 			any = true;
 			switch (cmd) {
 				case UHARDDOOM_FXCMD_TYPE_LOAD_CMAP:
+					d->stats[UHARDDOOM_STAT_FX_LOAD_CMAP]++;
 					d->fx_state &= ~(UHARDDOOM_FX_STATE_LOAD_MODE_MASK | UHARDDOOM_FX_STATE_LOAD_CNT_MASK);
 					d->fx_state |= UHARDDOOM_FX_STATE_LOAD_MODE_CMAP;
 					break;
@@ -1653,6 +1717,7 @@ static bool uharddoom_run_fx(UltimateHardDoomState *d) {
 					d->fx_state |= UHARDDOOM_FX_STATE_LOAD_MODE_BLOCK;
 					break;
 				case UHARDDOOM_FXCMD_TYPE_LOAD_FUZZ:
+					d->stats[UHARDDOOM_STAT_FX_LOAD_FUZZ]++;
 					d->fx_state &= ~(UHARDDOOM_FX_STATE_LOAD_MODE_MASK | UHARDDOOM_FX_STATE_LOAD_CNT_MASK | UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_MASK);
 					d->fx_state |= UHARDDOOM_FX_STATE_LOAD_MODE_FUZZ;
 					break;
@@ -1668,6 +1733,7 @@ static bool uharddoom_run_fx(UltimateHardDoomState *d) {
 					d->fx_skip = data & UHARDDOOM_FX_SKIP_MASK;
 					break;
 				case UHARDDOOM_FXCMD_TYPE_DRAW:
+					d->stats[UHARDDOOM_STAT_FX_DRAW]++;
 					if (data & UHARDDOOM_FX_STATE_DRAW_FUZZ_EN)
 						d->fx_state &= UHARDDOOM_FX_STATE_DRAW_FUZZ_POS_MASK;
 					else
@@ -1729,6 +1795,7 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 						return any;
 					}
 					pci_dma_read(&d->dev, pa, &d->swr_dst_buf, UHARDDOOM_BLOCK_SIZE);
+					d->stats[UHARDDOOM_STAT_SWR_BLOCK_READ]++;
 				}
 				d->swr_state |= UHARDDOOM_SWR_STATE_DST_BUF_FULL;
 				any = true;
@@ -1763,6 +1830,9 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 			d->swr_state--;
 			d->swr_state &= ~(UHARDDOOM_SWR_STATE_SRC_BUF_FULL | UHARDDOOM_SWR_STATE_DST_BUF_FULL | UHARDDOOM_SWR_STATE_TRANS_POS_MASK);
 			d->swr_dst_ptr += d->swr_dst_pitch;
+			d->stats[UHARDDOOM_STAT_SWR_BLOCK]++;
+			if (d->swr_state & UHARDDOOM_SWR_STATE_TRANS_EN)
+				d->stats[UHARDDOOM_STAT_SWR_BLOCK_TRANS]++;
 			any = true;
 		} else {
 			if (uharddoom_swrcmd_empty(d))
@@ -1771,6 +1841,7 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 			uint32_t data = d->swrcmd_data[d->swrcmd_get];
 			uharddoom_swrcmd_read(d);
 			// printf("SWRCMD %08x %08x\n", cmd, data);
+			d->stats[UHARDDOOM_STAT_SWR_CMD]++;
 			any = true;
 			switch (cmd) {
 				case UHARDDOOM_SWRCMD_TYPE_TRANSMAP_PTR:
@@ -1783,15 +1854,19 @@ static bool uharddoom_run_swr(UltimateHardDoomState *d) {
 					d->swr_dst_pitch = data & UHARDDOOM_BLOCK_PITCH_MASK;
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_DRAW:
+					d->stats[UHARDDOOM_STAT_SWR_DRAW]++;
 					d->swr_state = data & (UHARDDOOM_SWR_STATE_DRAW_LENGTH_MASK | UHARDDOOM_SWR_STATE_COL_EN | UHARDDOOM_SWR_STATE_TRANS_EN);
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_SRDSEM:
+					d->stats[UHARDDOOM_STAT_SWR_SRDSEM]++;
 					d->swr_state |= UHARDDOOM_SWR_STATE_SRDSEM;
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_COLSEM:
+					d->stats[UHARDDOOM_STAT_SWR_COLSEM]++;
 					d->swr_state |= UHARDDOOM_SWR_STATE_COLSEM;
 					break;
 				case UHARDDOOM_SWRCMD_TYPE_SPANSEM:
+					d->stats[UHARDDOOM_STAT_SWR_SPANSEM]++;
 					d->swr_state |= UHARDDOOM_SWR_STATE_SPANSEM;
 					break;
 			}
