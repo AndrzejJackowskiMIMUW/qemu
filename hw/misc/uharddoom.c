@@ -336,7 +336,8 @@ static void uharddoom_reset(UltimateHardDoomState *d, uint32_t val) {
 	if (val & UHARDDOOM_RESET_SWR)
 		d->swr_state = 0;
 	if (val & UHARDDOOM_RESET_STATS) {
-		/* XXX */
+		for (i = 0; i < UHARDDOOM_STATS_NUM; i++)
+			d->stats[i] = 0;
 	}
 	if (val & UHARDDOOM_RESET_TLB_KERNEL)
 		uharddoom_reset_tlb(d, 0);
