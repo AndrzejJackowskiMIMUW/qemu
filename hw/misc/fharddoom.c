@@ -215,7 +215,7 @@ static bool fharddoom_mmu_translate(FinalHardDoomState *d, int which, uint32_t v
 		/* No PTE, try the pool.  */
 		int tlbidx = fharddoom_hash(tag);
 		if (d->mmu_tlb_tag[tlbidx] != tag) {
-			d->stats[FHARDDOOM_STAT_TLB_MISS(which)]++;
+			d->stats[FHARDDOOM_STAT_MMU_TLB_MISS(which)]++;
 			/* Will need to fetch PTE.  First, get PT address.  */
 			uint32_t pt = d->mmu_slot[FHARDDOOM_VA_SLOT(va)];
 			if (!(pt & FHARDDOOM_MMU_SLOT_VALID))
@@ -225,12 +225,12 @@ static bool fharddoom_mmu_translate(FinalHardDoomState *d, int which, uint32_t v
 			d->mmu_tlb_tag[tlbidx] = tag;
 			d->mmu_tlb_value[tlbidx] = le32_read(buf);
 		} else {
-			d->stats[FHARDDOOM_STAT_TLB_POOL_HIT(which)]++;
+			d->stats[FHARDDOOM_STAT_MMU_TLB_POOL_HIT(which)]++;
 		}
 		d->mmu_client_tlb_tag[which] = tag;
 		d->mmu_client_tlb_value[which] = d->mmu_tlb_value[tlbidx];
 	} else {
-		d->stats[FHARDDOOM_STAT_TLB_HIT(which)]++;
+		d->stats[FHARDDOOM_STAT_MMU_TLB_HIT(which)]++;
 	}
 	uint32_t pte = d->mmu_client_tlb_value[which];
 	if (!(pte & FHARDDOOM_PTE_PRESENT))
@@ -375,6 +375,7 @@ static void fharddoom_cmd_manual_feed(FinalHardDoomState *d, uint32_t val) {
 		d->intr |= FHARDDOOM_INTR_FEED_ERROR;
 		return;
 	}
+	d->stats[FHARDDOOM_STAT_CMD_MANUAL_WORD]++;
 	d->cmd_main_state = FHARDDOOM_CMD_MAIN_STATE_MANUAL;
 	d->cmd_main_fifo_data[d->cmd_main_fifo_put] = val;
 	fharddoom_cmd_main_fifo_write(d);
@@ -442,6 +443,7 @@ static uint32_t fharddoom_cmd_sub_fetch(FinalHardDoomState *d, bool header) {
 static bool fharddoom_cmd_fetch_header(FinalHardDoomState *d, uint32_t *res) {
 	if (!fharddoom_cmd_sub_fifo_empty(d)) {
 		/* Read from subroutine FIFO.  */
+		d->stats[FHARDDOOM_STAT_CMD_HEADER_SUB]++;
 		*res = fharddoom_cmd_sub_fetch(d, true);
 		return true;
 	} else if (d->cmd_sub_len) {
@@ -449,6 +451,7 @@ static bool fharddoom_cmd_fetch_header(FinalHardDoomState *d, uint32_t *res) {
 		return false;
 	} else if (!fharddoom_cmd_main_fifo_empty(d)) {
 		/* Read from main FIFO.  */
+		d->stats[FHARDDOOM_STAT_CMD_HEADER_MAIN]++;
 		*res = fharddoom_cmd_main_fetch(d, true);
 		return true;
 	} else {
@@ -488,7 +491,7 @@ static void fharddoom_cmd_fence(FinalHardDoomState *d, uint32_t val) {
 	d->cmd_fence_last = val;
 	if (d->cmd_fence_wait == val) {
 		d->intr |= FHARDDOOM_INTR_FENCE_WAIT;
-		d->stats[FHARDDOOM_STAT_FENCE_WAIT]++;
+		d->stats[FHARDDOOM_STAT_CMD_FENCE_WAIT]++;
 	}
 }
 
@@ -757,13 +760,13 @@ static bool fharddoom_run_cmd_main(FinalHardDoomState *d) {
 	if (rsz > to_page_end)
 		rsz = to_page_end;
 	pci_dma_read(&d->dev, pa, &buf, rsz);
-	d->stats[FHARDDOOM_STAT_CMD_BLOCK]++;
+	d->stats[FHARDDOOM_STAT_CMD_MAIN_BLOCK]++;
 	uint32_t pos = 0;
 	while (pos < rsz) {
 		uint32_t word = le32_read(buf + pos);
 		d->cmd_main_fifo_data[d->cmd_main_fifo_put] = word;
 		fharddoom_cmd_main_fifo_write(d);
-		d->stats[FHARDDOOM_STAT_CMD_WORD]++;
+		d->stats[FHARDDOOM_STAT_CMD_MAIN_WORD]++;
 		pos += 4;
 		d->cmd_main_get += 4;
 		d->cmd_main_get &= FHARDDOOM_CMD_PTR_MASK;
@@ -802,7 +805,7 @@ static bool fharddoom_run_cmd_sub(FinalHardDoomState *d) {
 	if (rsz > to_page_end)
 		rsz = to_page_end;
 	pci_dma_read(&d->dev, pa, &buf, rsz);
-	d->stats[FHARDDOOM_STAT_CMD_BLOCK]++;
+	d->stats[FHARDDOOM_STAT_CMD_SUB_BLOCK]++;
 	uint32_t pos = 0;
 	while (pos < rsz) {
 		uint32_t word = le32_read(buf + pos);
@@ -812,7 +815,7 @@ static bool fharddoom_run_cmd_sub(FinalHardDoomState *d) {
 		d->cmd_sub_get &= FHARDDOOM_CMD_SUB_GET_MASK;
 		d->cmd_sub_len -= 4;
 		pos += 4;
-		d->stats[FHARDDOOM_STAT_CMD_WORD]++;
+		d->stats[FHARDDOOM_STAT_CMD_SUB_WORD]++;
 		if (fharddoom_cmd_sub_fifo_full(d))
 			return true;
 	}
