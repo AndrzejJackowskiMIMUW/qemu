@@ -186,4 +186,9 @@ config SIFIVE_U_PRCI
 config VIRT_CTRL
     bool
 
+config DICEDEV
+    bool
+    default y if PCI
+    depends on PCI
+
 source macio/Kconfig
